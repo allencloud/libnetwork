@@ -216,7 +216,7 @@ func (c *controller) sandboxCleanup(activeSandboxes map[string]interface{}) {
 		sb := &sandbox{
 			id:                 sbs.ID,
 			controller:         sbs.c,
-			containerID:        sbs.Cid,
+			containerID:        sbs.Cid, // 使用store中的数据，来初始化本机的sandbox，这个数据中包含容器id
 			endpoints:          epHeap{},
 			populatedEndpoints: map[string]struct{}{},
 			dbIndex:            sbs.dbIndex,
@@ -246,6 +246,8 @@ func (c *controller) sandboxCleanup(activeSandboxes map[string]interface{}) {
 			create = !sb.config.useDefaultSandBox
 			heap.Init(&sb.endpoints)
 		}
+
+		// 新建一个networkNamespace，并将其加入sb的 os.Sdbox
 		sb.osSbox, err = osl.NewSandbox(sb.Key(), create, isRestore)
 		if err != nil {
 			logrus.Errorf("failed to create osl sandbox while trying to restore sandbox %s%s: %v", sb.ID()[0:7], msg, err)

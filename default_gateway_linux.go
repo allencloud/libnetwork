@@ -15,7 +15,7 @@ func getPlatformOption() EndpointOption {
 
 func (c *controller) createGWNetwork() (Network, error) {
 	netOption := map[string]string{
-		bridge.BridgeName:         libnGWNetwork,
+		bridge.BridgeName:         libnGWNetwork, // "docker_gwbridge"
 		bridge.EnableICC:          strconv.FormatBool(false),
 		bridge.EnableIPMasquerade: strconv.FormatBool(true),
 	}

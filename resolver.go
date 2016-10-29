@@ -15,6 +15,17 @@ import (
 
 // Resolver represents the embedded DNS server in Docker. It operates
 // by listening on container's loopback interface for DNS queries.
+
+// 解析器是直接监听每一个容器的环回设备，针对DNS查询
+// 假设容器中的有一个进程访问某一域名，则该进程内部的语言库等，是用来做域名解析的。
+// 1. 应用层访问 curl baidu.com;
+// 2. curl软件的libc之类的库，保障首先来完成baidu.com域名的解析工作；
+// 3. 这些库不断的执行系统调用，完成dns cache记录的访问；若没有cache，则由内核发送dns lookup的请求；
+// 4. 直至请求返回，上层的应用一直在等待；返回域名对应的ip之后，应用层程序在此向具体的IP地址发送请求。
+
+// 因为Docker会将容器内部的resolv.conf的地址改为127.0.0.11，因此系统在完成域名解析的时候，解析请求都会发送到
+// 127.0.0.11:53 端口，那么由于docker daemon监听着每个容器环回设备127.0.0.11的53端口（通过iptables来完成？）
+// 导致最终解析请求都被docker daemon内部的resolver接收到，完成最终的解析。
 type Resolver interface {
 	// Start starts the name server for the container
 	Start() error
@@ -77,21 +88,22 @@ type extDNSEntry struct {
 }
 
 // resolver implements the Resolver interface
+//
 type resolver struct {
 	backend       DNSBackend
-	extDNSList    [maxExtDNS]extDNSEntry
-	server        *dns.Server
-	conn          *net.UDPConn
-	tcpServer     *dns.Server
-	tcpListen     *net.TCPListener
-	err           error
-	count         int32
-	tStamp        time.Time
-	queryLock     sync.Mutex
-	listenAddress string
-	proxyDNS      bool
-	resolverKey   string
-	startCh       chan struct{}
+	extDNSList    [maxExtDNS]extDNSEntry // 最多三个的外部 DNS 服务器
+	server        *dns.Server            // dns默认的UDP服务器，接受UDP请求
+	conn          *net.UDPConn           // dns默认 UDP server的连接
+	tcpServer     *dns.Server            // dns默认的 TCP server
+	tcpListen     *net.TCPListener       // dns 解析器默认对TCP协议的请求监听
+	err           error                  //
+	count         int32                  //
+	tStamp        time.Time              //
+	queryLock     sync.Mutex             //
+	listenAddress string                 // resolver 的监听地址，一般默认为127.0.0.11
+	proxyDNS      bool                   //
+	resolverKey   string                 //
+	startCh       chan struct{}          //
 }
 
 func init() {
@@ -120,6 +132,7 @@ func (r *resolver) SetupFunc(port int) func() {
 			Port: port,
 		}
 
+		// // dns 解析器监听 UDP 协议的端口
 		r.conn, err = net.ListenUDP("udp", addr)
 		if err != nil {
 			r.err = fmt.Errorf("error in opening name server socket %v", err)
@@ -132,11 +145,13 @@ func (r *resolver) SetupFunc(port int) func() {
 			Port: port,
 		}
 
+		// dns 解析器也要监听TCP协议的端口
 		r.tcpListen, err = net.ListenTCP("tcp", tcpaddr)
 		if err != nil {
 			r.err = fmt.Errorf("error in opening name TCP server socket %v", err)
 			return
 		}
+		// 整个Setup流程没有出错
 		r.err = nil
 	})
 }
@@ -147,6 +162,7 @@ func (r *resolver) Start() error {
 
 	// make sure the resolver has been setup before starting
 	if r.err != nil {
+		// 如果setup过程中出错的话，Start直接返回setup的出错信息
 		return r.err
 	}
 
@@ -154,12 +170,14 @@ func (r *resolver) Start() error {
 		return fmt.Errorf("setting up IP table rules failed: %v", err)
 	}
 
+	// 创建一个负责于UDP的dns解析server
 	s := &dns.Server{Handler: r, PacketConn: r.conn}
 	r.server = s
 	go func() {
 		s.ActivateAndServe()
 	}()
 
+	// 创建一个负责于TCP的dns解析服务器
 	tcpServer := &dns.Server{Handler: r, Listener: r.tcpListen}
 	r.tcpServer = tcpServer
 	go func() {
@@ -295,7 +313,7 @@ func (r *resolver) handlePTRQuery(ptr string, query *dns.Msg) (*dns.Msg, error) 
 }
 
 func (r *resolver) handleSRVQuery(svc string, query *dns.Msg) (*dns.Msg, error) {
-
+	// 解析service的名字，得到dns记录列表，以及ip列表
 	srv, ip := r.backend.ResolveService(svc)
 
 	if len(srv) == 0 {
@@ -340,6 +358,8 @@ func truncateResp(resp *dns.Msg, maxSize int, isTCP bool) {
 	}
 }
 
+// 开始服务于DNS解析请求
+// 针对query进行解析，然后将解析结果，加入w
 func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 	var (
 		extConn net.Conn
@@ -350,6 +370,9 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 	if query == nil || len(query.Question) == 0 {
 		return
 	}
+
+	// 针对网络层的dns解析请求，比如：curl servicename；
+	// 将底层的解析请求中，找出相应的name，也就是service的名称
 	name := query.Question[0].Name
 
 	switch query.Question[0].Qtype {
@@ -360,6 +383,9 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 	case dns.TypePTR:
 		resp, err = r.handlePTRQuery(name, query)
 	case dns.TypeSRV:
+		// 通过内嵌的resolver，得到一个resp对象，
+		// 这个resp对象中包含有所有的dns记录以及ip信息
+		// 后续应该会对所有的dns记录进行一系列的处理，得出其中的一个，比如Round Robin
 		resp, err = r.handleSRVQuery(name, query)
 	}
 

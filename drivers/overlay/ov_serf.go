@@ -38,6 +38,7 @@ func (l *logWriter) Write(p []byte) (int, error) {
 func (d *driver) serfInit() error {
 	var err error
 
+	// 获取默认的serf配置信息
 	config := serf.DefaultConfig()
 	config.Init()
 	config.MemberlistConfig.BindAddr = d.advertiseAddress
@@ -50,6 +51,7 @@ func (d *driver) serfInit() error {
 	config.LogOutput = &logWriter{}
 	config.MemberlistConfig.LogOutput = config.LogOutput
 
+	// 创建一个新的serf实例，启动所有的后台任务，来维护集群的成员信息
 	s, err := serf.Create(config)
 	if err != nil {
 		return fmt.Errorf("failed to create cluster node: %v", err)

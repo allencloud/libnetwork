@@ -43,19 +43,20 @@ var (
 // into it when called on method AddInterface or sets the gateway etc.
 type networkNamespace struct {
 	path         string
-	iFaces       []*nwIface
-	gw           net.IP
-	gwv6         net.IP
-	staticRoutes []*types.StaticRoute
-	neighbors    []*neigh
-	nextIfIndex  map[string]int
-	isDefault    bool
-	nlHandle     *netlink.Handle
-	loV6Enabled  bool
+	iFaces       []*nwIface           // 一个net namespace 中拥有的网络接口列表
+	gw           net.IP               // 这个net namespace 的IPv4的网关
+	gwv6         net.IP               // 这个net namespace 的IPv6的网关
+	staticRoutes []*types.StaticRoute // 这个net namespace 的静态路由规则
+	neighbors    []*neigh             // neighbours表建立了绑定信息，这样的信息是相同物理链路主机的协议地址和链路层地址之间的绑定
+	nextIfIndex  map[string]int       //
+	isDefault    bool                 //
+	nlHandle     *netlink.Handle      //
+	loV6Enabled  bool                 //
 	sync.Mutex
 }
 
 // SetBasePath sets the base url prefix for the ns path
+// 默认情况下传入的path的值是 "/var/run/docker"
 func SetBasePath(path string) {
 	prefix = path
 }
@@ -64,6 +65,7 @@ func init() {
 	reexec.Register("netns-create", reexecCreateNamespace)
 }
 
+// 默认情况下返回的值是 /var/run/docker/netns
 func basePath() string {
 	return filepath.Join(prefix, "netns")
 }
@@ -158,13 +160,13 @@ func GenerateKey(containerID string) string {
 			indexStr string
 			tmpkey   string
 		)
-		dir, err := ioutil.ReadDir(basePath())
+		dir, err := ioutil.ReadDir(basePath()) // 路径是: /var/run/docker/netns
 		if err != nil {
 			return ""
 		}
 
 		for _, v := range dir {
-			id := v.Name()
+			id := v.Name() // 找到 /var/run/docker/netns 下各个文件的名称
 			if strings.HasSuffix(id, containerID[:maxLen-1]) {
 				indexStr = strings.TrimSuffix(id, containerID[:maxLen-1])
 				tmpindex, err := strconv.Atoi(indexStr)
@@ -434,6 +436,7 @@ func (n *networkNamespace) Restore(ifsopt map[string][]IfaceOption, routes []*ty
 		seps := strings.Split(name, "+")
 		srcName := seps[0]
 		dstPrefix := seps[1]
+		// 创建一个新的网络接口对象，此时还没有通过netlink进行创建
 		i := &nwIface{srcName: srcName, dstName: dstPrefix, ns: n}
 		i.processInterfaceOptions(opts...)
 		if i.master != "" {

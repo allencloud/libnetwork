@@ -9,7 +9,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// SetupDevice create a new bridge interface/
+// SetupDevice creates a new bridge interface/
 func setupDevice(config *networkConfiguration, i *bridgeInterface) error {
 	var setMac bool
 
@@ -35,6 +35,7 @@ func setupDevice(config *networkConfiguration, i *bridgeInterface) error {
 		setMac = kv.Kernel > 3 || (kv.Kernel == 3 && kv.Major >= 3)
 	}
 
+	// 这里是真正的创建网桥
 	if err = i.nlh.LinkAdd(i.Link); err != nil {
 		logrus.Debugf("Failed to create bridge %s via netlink. Trying ioctl", config.BridgeName)
 		return ioctlCreateBridge(config.BridgeName, setMac)

@@ -68,6 +68,8 @@ func (m *nodeEventMessage) Finished() {
 	}
 }
 
+// 将node的事件，比如说node join的信息，通过gossip广播出去
+// 广播多少个单位等配置信息在于nodeBroadcasts中
 func (nDB *NetworkDB) sendNodeEvent(event NodeEvent_Type) error {
 	nEvent := NodeEvent{
 		Type:     event,
@@ -75,12 +77,14 @@ func (nDB *NetworkDB) sendNodeEvent(event NodeEvent_Type) error {
 		NodeName: nDB.config.NodeName,
 	}
 
+	// 这里加码的消息中的信息是否有点单薄？只有networkdb的节点名称？
 	raw, err := encodeMessage(MessageTypeNodeEvent, &nEvent)
 	if err != nil {
 		return err
 	}
 
 	notifyCh := make(chan struct{})
+	// 通过networkdb中的节点广播器，将更新后的信息，开始广播
 	nDB.nodeBroadcasts.QueueBroadcast(&nodeEventMessage{
 		msg:    raw,
 		notify: notifyCh,

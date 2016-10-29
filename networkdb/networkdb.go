@@ -62,6 +62,7 @@ type NetworkDB struct {
 
 	// A map of nodes which are participating in a given
 	// network. The key is a network ID.
+	// 键为 network ID， 值为一个节点列表
 	networkNodes map[string][]string
 
 	// A table of ack channels for every node from which we are
@@ -98,6 +99,7 @@ type PeerInfo struct {
 
 type node struct {
 	memberlist.Node
+	// lamport 时间主要是针对node的同步时间点，需要递增，确保节点的是全局尽可能最新的
 	ltime serf.LamportTime
 	// Number of hours left before the reaper removes the node
 	reapTime time.Duration
@@ -184,6 +186,7 @@ func New(c *Config) (*NetworkDB, error) {
 	nDB.indexes[byTable] = radix.New()
 	nDB.indexes[byNetwork] = radix.New()
 
+	// 创建完networkdb之后，立即开始完成networkdb集群范围内的初始化
 	if err := nDB.clusterInit(); err != nil {
 		return nil, err
 	}

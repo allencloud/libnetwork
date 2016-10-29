@@ -27,8 +27,10 @@ const (
 func (sb *sandbox) startResolver(restore bool) {
 	sb.resolverOnce.Do(func() {
 		var err error
+		// resolverIPSandbox = "127.0.0.11"
 		sb.resolver = NewResolver(resolverIPSandbox, true, sb.Key(), sb)
 		defer func() {
+			// defer表示：如果startResolver失败的话，需要把sandbox的resolver回滚，设为nil
 			if err != nil {
 				sb.resolver = nil
 			}
@@ -58,15 +60,19 @@ func (sb *sandbox) startResolver(restore bool) {
 	})
 }
 
+// 设置域名解析所需要的文件
 func (sb *sandbox) setupResolutionFiles() error {
+	// 创建hosts文件
 	if err := sb.buildHostsFile(); err != nil {
 		return err
 	}
 
+	// 将容器所有的link容器的IP地址更新到hosts文件中
 	if err := sb.updateParentHosts(); err != nil {
 		return err
 	}
 
+	// 配置起sandbox的resolv.conf文件
 	if err := sb.setupDNS(); err != nil {
 		return err
 	}
@@ -76,6 +82,7 @@ func (sb *sandbox) setupResolutionFiles() error {
 
 func (sb *sandbox) buildHostsFile() error {
 	if sb.config.hostsPath == "" {
+		// "/var/lib/docker/network/files/" + sb.id + "/hosts"
 		sb.config.hostsPath = defaultPrefix + "/" + sb.id + "/hosts"
 	}
 
@@ -92,6 +99,7 @@ func (sb *sandbox) buildHostsFile() error {
 		return nil
 	}
 
+	// 创建额外的hosts信息内容
 	extraContent := make([]etchosts.Record, 0, len(sb.config.extraHosts))
 	for _, extraHost := range sb.config.extraHosts {
 		extraContent = append(extraContent, etchosts.Record{Hosts: extraHost.name, IP: extraHost.IP})

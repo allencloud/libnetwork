@@ -18,22 +18,24 @@ import (
 // Config encapsulates configurations of various Libnetwork components
 type Config struct {
 	Daemon          DaemonCfg
-	Cluster         ClusterCfg
+	Cluster         ClusterCfg // 主要用来配置kv存储，比如etcd，consul等，默认情况下，用户不配置，为boltdb
 	Scopes          map[string]*datastore.ScopeCfg
-	ActiveSandboxes map[string]interface{}
+	ActiveSandboxes map[string]interface{} //
 	PluginGetter    plugingetter.PluginGetter
 }
 
 // DaemonCfg represents libnetwork core configuration
 type DaemonCfg struct {
-	Debug           bool
-	Experimental    bool
-	DataDir         string
-	DefaultNetwork  string
-	DefaultDriver   string
-	Labels          []string
+	Debug          bool
+	Experimental   bool
+	DataDir        string
+	DefaultNetwork string
+	DefaultDriver  string
+	Labels         []string
+	// 用户输入的为网络驱动设置的参数，比如overlay等
 	DriverCfg       map[string]interface{}
 	ClusterProvider cluster.Provider
+	// 管道接收终止运行libnetwork集群能力的消息
 	DisableProvider chan struct{}
 }
 
@@ -81,6 +83,7 @@ func ParseConfigOptions(cfgOptions ...Option) *Config {
 	}
 
 	cfg.ProcessOptions(cfgOptions...)
+	// DataDir 代表docker的根目录，一般为/var/lib/docker
 	cfg.LoadDefaultScopes(cfg.Daemon.DataDir)
 
 	return cfg
@@ -107,6 +110,8 @@ func OptionDefaultDriver(dd string) Option {
 }
 
 // OptionDriverConfig returns an option setter for driver configuration.
+// 检索docker的代码，发现目前只有bridge可以定制driver参数，
+// 见docker/docker/daemon_unix.go#driverOptions()
 func OptionDriverConfig(networkType string, config map[string]interface{}) Option {
 	return func(c *Config) {
 		c.Daemon.DriverCfg[networkType] = config
@@ -204,7 +209,7 @@ func OptionDataDir(dataDir string) Option {
 // OptionExecRoot function returns an option setter for exec root folder
 func OptionExecRoot(execRoot string) Option {
 	return func(c *Config) {
-		osl.SetBasePath(execRoot)
+		osl.SetBasePath(execRoot) // execRoot: "/var/run/docker"
 	}
 }
 

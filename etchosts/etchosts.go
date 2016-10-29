@@ -12,6 +12,8 @@ import (
 	"sync"
 )
 
+// 这个package主要是为了完成为Sandbox构建/etc/hosts文件
+
 // Record Structure for a single host record
 type Record struct {
 	Hosts string

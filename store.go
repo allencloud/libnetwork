@@ -39,6 +39,7 @@ func (c *controller) initStores() error {
 		c.Unlock()
 		return nil
 	}
+	// 默认会有一个boltdb
 	scopeConfigs := c.cfg.Scopes
 	c.stores = nil
 	c.Unlock()
@@ -49,7 +50,9 @@ func (c *controller) initStores() error {
 		}
 	}
 
+	// controller 开始针对store做watch操作，看是否有新的endpoint的创建或删除
 	c.startWatch()
+
 	return nil
 }
 
@@ -439,6 +442,7 @@ func (c *controller) processEndpointDelete(nmap map[string]*netWatch, ep *endpoi
 }
 
 func (c *controller) watchLoop() {
+	// 开始循环获取watchCh和unWatchCh中的信息
 	for {
 		select {
 		case ep := <-c.watchCh:
@@ -457,6 +461,7 @@ func (c *controller) startWatch() {
 	c.unWatchCh = make(chan *endpoint)
 	c.nmap = make(map[string]*netWatch)
 
+	// 创建一个goroutine，不断的监控watchCh和unWatchCh中的内容，从而确定下一步是否需要完成相应的操作
 	go c.watchLoop()
 }
 

@@ -97,7 +97,10 @@ func (nDB *NetworkDB) RemoveKey(key []byte) {
 	}
 }
 
+// 针对每新建的一个network controller，需要加入集群模式；网络需要创建networkdb
+// 创建完之后，需要对networkdb进行集群范围内的初始化，包括获取集群内其他的节点信息等
 func (nDB *NetworkDB) clusterInit() error {
+	// 创建默认的局域网memberlist配置信息，并加入一些特定的配置项
 	config := memberlist.DefaultLANConfig()
 	config.Name = nDB.config.NodeName
 	config.BindAddr = nDB.config.BindAddr
@@ -146,25 +149,33 @@ func (nDB *NetworkDB) clusterInit() error {
 		RetransmitMult: config.RetransmitMult,
 	}
 
+	// 开始真正新建一个memberlist对象，维护一个集群成员列表
 	mlist, err := memberlist.Create(config)
 	if err != nil {
 		return fmt.Errorf("failed to create memberlist: %v", err)
 	}
 
+	// 把memberlist的信息等，装载进入networkdb
 	nDB.stopCh = make(chan struct{})
 	nDB.memberlist = mlist
 
+	// 真正的初始化操作应该是在这里吧
 	for _, trigger := range []struct {
-		interval time.Duration
+		interval time.Duration // 主要是用来保障以下的5个方法，不要再同一时间上开始运行
 		fn       func()
 	}{
-		{reapPeriod, nDB.reapState},
-		{config.GossipInterval, nDB.gossip},
-		{config.PushPullInterval, nDB.bulkSyncTables},
-		{retryInterval, nDB.reconnectNode},
-		{nodeReapPeriod, nDB.reapDeadNode},
+		{reapPeriod, nDB.reapState},                   // 每隔5s，就开始清理状态
+		{config.GossipInterval, nDB.gossip},           // 每隔200ms, 就开始实现gossip传播协议
+		{config.PushPullInterval, nDB.bulkSyncTables}, // 每隔 30s, 实现
+		{retryInterval, nDB.reconnectNode},            // 每隔1s时间，就开始重新连接节点
+		{nodeReapPeriod, nDB.reapDeadNode},            // 每隔2小时，需要开始执行一个死节点的清理
 	} {
 		t := time.NewTicker(trigger.interval)
+		// 新创建goroutine来执行以上的5个方法
+		// 每一个goroutine的运行逻辑是这样的：
+		// 1. 根据 trigger.interval 来delay运行指定的函数；
+		// 2. 如果 nDB.stopCh 有内容，说明需要停止networkdb的运行，则退出；
+		// 3. 如果以上条件都OK，那么每隔定期时间 t.C，开始运行trigger.fn
 		go nDB.triggerFunc(trigger.interval, t.C, nDB.stopCh, trigger.fn)
 		nDB.tickers = append(nDB.tickers, t)
 	}
@@ -250,6 +261,7 @@ func (nDB *NetworkDB) triggerFunc(stagger time.Duration, C <-chan time.Time, sto
 	}
 }
 
+// 从networkdb的failedNodes中删除失败的节点
 func (nDB *NetworkDB) reapDeadNode() {
 	nDB.Lock()
 	defer nDB.Unlock()
@@ -258,6 +270,7 @@ func (nDB *NetworkDB) reapDeadNode() {
 			n.reapTime -= nodeReapPeriod
 			continue
 		}
+		// 如果失败节点超出了它的清理预留时间reapTime，则删除之
 		logrus.Debugf("Removing failed node %v from gossip cluster", n.Name)
 		delete(nDB.failedNodes, id)
 	}
@@ -266,6 +279,7 @@ func (nDB *NetworkDB) reapDeadNode() {
 func (nDB *NetworkDB) reconnectNode() {
 	nDB.RLock()
 	if len(nDB.failedNodes) == 0 {
+		// 如果没有失败的节点，自然也不需要重连
 		nDB.RUnlock()
 		return
 	}
@@ -276,13 +290,19 @@ func (nDB *NetworkDB) reconnectNode() {
 	}
 	nDB.RUnlock()
 
+	// 随机挑选出nodes中的任意一个
 	node := nodes[randomOffset(len(nodes))]
 	addr := net.UDPAddr{IP: node.Addr, Port: int(node.Port)}
 
+	// memberlist 向这个随机的节点发送连接请求，
+	// 如果Join出错，则返回；
+	// 如果没有出错，则该随机节点的信息会进入memberlist
 	if _, err := nDB.memberlist.Join([]string{addr.String()}); err != nil {
 		return
 	}
 
+	// 由于新的节点已经连接上了，memberlist中的nodes已经发生变化，
+	// 所以networkdb需要开始广播自身的节点列表
 	if err := nDB.sendNodeEvent(NodeEventTypeJoin); err != nil {
 		logrus.Errorf("failed to send node join during reconnect: %v", err)
 		return

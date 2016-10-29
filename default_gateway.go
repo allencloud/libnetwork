@@ -167,7 +167,7 @@ func (c *controller) defaultGwNetwork() (Network, error) {
 	procGwNetwork <- true
 	defer func() { <-procGwNetwork }()
 
-	n, err := c.NetworkByName(libnGWNetwork)
+	n, err := c.NetworkByName(libnGWNetwork) // "docker_gwbridge"
 	if err != nil {
 		if _, ok := err.(types.NotFoundError); ok {
 			n, err = c.createGWNetwork()

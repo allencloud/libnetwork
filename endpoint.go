@@ -52,29 +52,29 @@ type EndpointOption func(ep *endpoint)
 type endpoint struct {
 	name              string
 	id                string
-	network           *network
-	iface             *endpointInterface
-	joinInfo          *endpointJoinInfo
-	sandboxID         string
-	locator           string
-	exposedPorts      []types.TransportPort
-	anonymous         bool
-	disableResolution bool
-	generic           map[string]interface{}
-	joinLeaveDone     chan struct{}
-	prefAddress       net.IP
-	prefAddressV6     net.IP
-	ipamOptions       map[string]string
-	aliases           map[string]string
-	myAliases         []string
-	svcID             string
-	svcName           string
-	virtualIP         net.IP
-	svcAliases        []string
-	ingressPorts      []*PortConfig
-	dbIndex           uint64
-	dbExists          bool
-	serviceEnabled    bool
+	network           *network               // 此endpoint所属的network指针
+	iface             *endpointInterface     // 此endpoint的具体网络接口指针
+	joinInfo          *endpointJoinInfo      // 此endpoint加入一个sandbox的时候，用户提供的加入信息配置，比如说网络、路由纪录等配置
+	sandboxID         string                 // 此endpoint所属的sandbox id
+	locator           string                 // 此endpoint所在的cluster的host id，本机持久化信息的都是为空字符串“”
+	exposedPorts      []types.TransportPort  // 此endpoint需要对外暴露的端口
+	anonymous         bool                   // 此endpoint是否是匿名的
+	disableResolution bool                   // 是否直接禁用内部网络地址解析（DNS）
+	generic           map[string]interface{} //
+	joinLeaveDone     chan struct{}          //
+	prefAddress       net.IP                 //
+	prefAddressV6     net.IP                 //
+	ipamOptions       map[string]string      // 网络地址管理器的具体选项
+	aliases           map[string]string      //
+	myAliases         []string               //
+	svcID             string                 //
+	svcName           string                 //
+	virtualIP         net.IP                 // 此endpoint的虚拟地址IP
+	svcAliases        []string               //
+	ingressPorts      []*PortConfig          //
+	dbIndex           uint64                 //
+	dbExists          bool                   //
+	serviceEnabled    bool                   //
 	sync.Mutex
 }
 
@@ -1120,6 +1120,8 @@ func (c *controller) cleanupLocalEndpoints() {
 			eps[ep.id] = true
 		}
 	}
+
+	// 获取网络链表，network list
 	nl, err := c.getNetworksForScope(datastore.LocalScope)
 	if err != nil {
 		logrus.Warnf("Could not get list of networks during endpoint cleanup: %v", err)
@@ -1127,6 +1129,8 @@ func (c *controller) cleanupLocalEndpoints() {
 	}
 
 	for _, n := range nl {
+		// 遍历每一个store 中的网络
+		// 获取每一个网络中的endpoint
 		epl, err := n.getEndpointsFromStore()
 		if err != nil {
 			logrus.Warnf("Could not get list of endpoints in network %s during endpoint cleanup: %v", n.name, err)
@@ -1134,21 +1138,26 @@ func (c *controller) cleanupLocalEndpoints() {
 		}
 
 		for _, ep := range epl {
+			// 遍历每一个网络中的endpoint
 			if _, ok := eps[ep.id]; ok {
 				continue
 			}
+
 			logrus.Infof("Removing stale endpoint %s (%s)", ep.name, ep.id)
+			// 直接将该endpoint从它所属的网络中删除
 			if err := ep.Delete(true); err != nil {
 				logrus.Warnf("Could not delete local endpoint %s during endpoint cleanup: %v", ep.name, err)
 			}
 		}
 
+		// 获取store中所有的endpoint
 		epl, err = n.getEndpointsFromStore()
 		if err != nil {
 			logrus.Warnf("Could not get list of endpoints in network %s for count update: %v", n.name, err)
 			continue
 		}
 
+		// 获取每一个network的endpoint的数量
 		epCnt := n.getEpCnt().EndpointCnt()
 		if epCnt != uint64(len(epl)) {
 			logrus.Infof("Fixing inconsistent endpoint_cnt for network %s. Expected=%d, Actual=%d", n.name, len(epl), epCnt)

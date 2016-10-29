@@ -29,7 +29,7 @@ func chainExists(cname string) bool {
 
 func setupGlobalChain() {
 	// Because of an ungraceful shutdown, chain could already be present
-	if !chainExists(globalChain) {
+	if !chainExists(globalChain) { // globalChain="DOCKER-OVERLAY"
 		if err := iptables.RawCombinedOutput("-N", globalChain); err != nil {
 			logrus.Errorf("could not create global overlay chain: %v", err)
 			return

@@ -80,6 +80,7 @@ func (a *Allocator) getStore(as string) datastore.DataStore {
 	return nil
 }
 
+// 从store中取出相应scope的网络地址空间，比如local scope的信息存储于本地，即读取相应文件中的内容
 func (a *Allocator) getAddressSpaceFromStore(as string) (*addrSpace, error) {
 	store := a.getStore(as)
 
@@ -89,6 +90,8 @@ func (a *Allocator) getAddressSpaceFromStore(as string) (*addrSpace, error) {
 	}
 
 	pc := &addrSpace{id: dsConfigKey + "/" + as, ds: store, alloc: a}
+
+	// 通过key，获取到完整的addrSpace，也就是pc
 	if err := store.GetObject(datastore.Key(pc.Key()...), pc); err != nil {
 		if err == datastore.ErrKeyNotFound {
 			return nil, nil

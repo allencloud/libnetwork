@@ -18,7 +18,7 @@ import (
 
 type hostDiscovery struct {
 	watcher  discovery.Watcher
-	nodes    mapset.Set
+	nodes    mapset.Set // nodes 代表集群中拥有多少个节点的集合
 	stopChan chan struct{}
 	sync.Mutex
 }
@@ -77,15 +77,20 @@ func (h *hostDiscovery) processCallback(entries discovery.Entries,
 	updated := hosts(entries)
 	h.Lock()
 	existing := h.nodes
+	// 监听之后，有新加节点，新删节点
 	added, removed := diff(existing, updated)
 	h.nodes = updated
 	h.Unlock()
 
+	// 不论如何，都要调用 activeCallback，
+	// 如果不在监听的话，重新启动监听
 	activeCallback()
 	if len(added) > 0 {
+		// 有加，则回调 joinCallback
 		joinCallback(added)
 	}
 	if len(removed) > 0 {
+		// 有删，则回调 leaveCallback
 		leaveCallback(removed)
 	}
 }

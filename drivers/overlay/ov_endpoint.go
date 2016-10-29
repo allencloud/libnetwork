@@ -17,12 +17,13 @@ type endpointTable map[string]*endpoint
 
 const overlayEndpointPrefix = "overlay/endpoint"
 
+// endpoint 可以认为是一个网络设备
 type endpoint struct {
-	id       string
-	nid      string
-	ifName   string
-	mac      net.HardwareAddr
-	addr     *net.IPNet
+	id       string           // endpoint的ID
+	nid      string           // 网络network的ID
+	ifName   string           // 网络接口的名称
+	mac      net.HardwareAddr // 网络接口的mac地址
+	addr     *net.IPNet       // 网络接口的IP地址
 	dbExists bool
 	dbIndex  uint64
 }

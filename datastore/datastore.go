@@ -126,6 +126,7 @@ const (
 	EndpointKeyPrefix = "endpoint"
 )
 
+// 一开始就初始化一个 defaultScopes
 var (
 	defaultScopes = makeDefaultScopes()
 )
@@ -134,8 +135,10 @@ func makeDefaultScopes() map[string]*ScopeCfg {
 	def := make(map[string]*ScopeCfg)
 	def[LocalScope] = &ScopeCfg{
 		Client: ScopeClientCfg{
+			// 默认原来是使用boltdb来实现的
 			Provider: string(store.BOLTDB),
-			Address:  defaultPrefix + "/local-kv.db",
+			// 默认情况下的实际地址是：/var/lib/docker/network/files/local-kv.db
+			Address: defaultPrefix + "/local-kv.db",
 			Config: &store.Config{
 				Bucket:            "libnetwork",
 				ConnectionTimeout: time.Minute,

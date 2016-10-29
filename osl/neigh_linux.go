@@ -12,18 +12,20 @@ import (
 // NeighOption is a function option type to set interface options
 type NeighOption func(nh *neigh)
 
+// neigh相当于arp表中需要用到的ip-mac映射表
 type neigh struct {
-	dstIP    net.IP
-	dstMac   net.HardwareAddr
-	linkName string
-	linkDst  string
-	family   int
+	dstIP    net.IP           // ip-mac映射表 中的IP信息
+	dstMac   net.HardwareAddr // ip-mac映射表 中的MAC信息
+	linkName string           //
+	linkDst  string           //
+	family   int              //
 }
 
 func (n *networkNamespace) findNeighbor(dstIP net.IP, dstMac net.HardwareAddr) *neigh {
 	n.Lock()
 	defer n.Unlock()
 
+	// 从一个 net namespace 的 neighbour 列表中找到相对应的 neighbour
 	for _, nh := range n.neighbors {
 		if nh.dstIP.Equal(dstIP) && bytes.Equal(nh.dstMac, dstMac) {
 			return nh
@@ -76,6 +78,7 @@ func (n *networkNamespace) DeleteNeighbor(dstIP net.IP, dstMac net.HardwareAddr,
 		// from the namespace cache. Otherwise if the neighbor moves back to the
 		// same host again, kernel update can fail.
 		if err := nlh.NeighDel(nlnh); err != nil {
+			// NeighDel will delete an IP address from a link device.
 			logrus.Warnf("Deleting neighbor IP %s, mac %s failed, %v", dstIP, dstMac, err)
 		}
 	}
@@ -151,6 +154,7 @@ func (n *networkNamespace) AddNeighbor(dstIP net.IP, dstMac net.HardwareAddr, fo
 		nlnh.LinkIndex = iface.Attrs().Index
 	}
 
+	// NeighSet will add or replace an IP to MAC mapping to the ARP table
 	if err := nlh.NeighSet(nlnh); err != nil {
 		return fmt.Errorf("could not add neighbor entry: %v", err)
 	}

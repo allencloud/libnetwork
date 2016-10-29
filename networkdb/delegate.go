@@ -27,10 +27,14 @@ func (nDB *NetworkDB) checkAndGetNode(nEvent *NodeEvent) *node {
 		nDB.nodes,
 	} {
 		if n, ok := nodes[nEvent.NodeName]; ok {
+			// serf.LamportTime 如果比事件信息中的都大，
+			// 那说明当前存储的节点要比传输过来的节点要新，不予更新
 			if n.ltime >= nEvent.LTime {
 				return nil
 			}
 
+			// 如果自身节点中的serf.LamportTime要小，则说明要更新，
+			// 把当前存储中的节点先删除
 			delete(nodes, n.Name)
 			return n
 		}
@@ -62,6 +66,9 @@ func (nDB *NetworkDB) purgeSameNode(n *node) {
 	}
 }
 
+// networkdb 接收到node事件之后，针对自身存储的节点信息做更改
+// 如果是新加进来的节点，则更新nodes
+// 如果是有节点需要离开，则更新leftNodes
 func (nDB *NetworkDB) handleNodeEvent(nEvent *NodeEvent) bool {
 	n := nDB.checkAndGetNode(nEvent)
 	if n == nil {

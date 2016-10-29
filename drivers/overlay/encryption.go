@@ -26,9 +26,9 @@ const (
 )
 
 const (
-	forward = iota + 1
-	reverse
-	bidir
+	forward = iota + 1 // 1 // iota是golang语言的常量计数器,只能在常量的表达式中使用。
+	reverse            // 2
+	bidir              // 3
 )
 
 var spMark = netlink.XfrmMark{Value: uint32(r), Mask: 0xffffffff}
@@ -54,8 +54,9 @@ func (s *spi) String() string {
 	return fmt.Sprintf("SPI(FWD: 0x%x, REV: 0x%x)", uint32(s.forward), uint32(s.reverse))
 }
 
+// encrMap 主要用于记录哪些节点需要实现使用ipSec进行加密
 type encrMap struct {
-	nodes map[string][]*spi
+	nodes map[string][]*spi // 需要加密的节点列表
 	sync.Mutex
 }
 
@@ -201,7 +202,7 @@ func removeEncryption(localIP, remoteIP net.IP, em *encrMap) error {
 
 func programMangle(vni uint32, add bool) (err error) {
 	var (
-		p      = strconv.FormatUint(uint64(vxlanPort), 10)
+		p      = strconv.FormatUint(uint64(vxlanPort), 10) // vxlanPort = 4789
 		c      = fmt.Sprintf("0>>22&0x3C@12&0xFFFFFF00=%d", int(vni)<<8)
 		m      = strconv.FormatUint(uint64(r), 10)
 		chain  = "OUTPUT"
@@ -219,6 +220,7 @@ func programMangle(vni uint32, add bool) (err error) {
 		action = "remove"
 	}
 
+	// iptables -t mangle -A OUTPUT -p udp --dport 4789 -m u32 --u32 0>>22&0x3C@12&0xFFFFFF00=8448 -j MARK --set-mark 13681891
 	if err = iptables.RawCombinedOutput(append([]string{"-t", string(iptables.Mangle), a, chain}, rule...)...); err != nil {
 		logrus.Warnf("could not %s mangle rule: %v", action, err)
 	}
@@ -598,7 +600,7 @@ func (n *network) maxMTU() int {
 	if n.mtu != 0 {
 		mtu = n.mtu
 	}
-	mtu -= vxlanEncap
+	mtu -= vxlanEncap // 使用MAC in UDP的方法进行封装，共50字节的封装报文头
 	if n.secure {
 		// In case of encryption account for the
 		// esp packet espansion and padding

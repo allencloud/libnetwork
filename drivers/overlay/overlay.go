@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	networkType  = "overlay"
-	vethPrefix   = "veth"
-	vethLen      = 7
-	vxlanIDStart = 256
-	vxlanIDEnd   = (1 << 24) - 1
-	vxlanPort    = 4789
-	vxlanEncap   = 50
+	networkType  = "overlay"     // 网络类型为overlay
+	vethPrefix   = "veth"        //
+	vethLen      = 7             //
+	vxlanIDStart = 256           //
+	vxlanIDEnd   = (1 << 24) - 1 //
+	vxlanPort    = 4789          // 缺省情况下，VxLan报文的目的的UDP端口号为4789
+	vxlanEncap   = 50            // 使用MAC in UDP的方法进行封装，共50字节的封装报文头
 	secureOption = "encrypted"
 )
 
@@ -39,27 +39,30 @@ type driver struct {
 	advertiseAddress string
 	neighIP          string
 	config           map[string]interface{}
-	peerDb           peerNetworkMap
-	secMap           *encrMap
-	serfInstance     *serf.Serf
-	networks         networkTable
-	store            datastore.DataStore
-	localStore       datastore.DataStore
-	vxlanIdm         *idm.Idm
-	once             sync.Once
-	joinOnce         sync.Once
-	localJoinOnce    sync.Once
+	peerDb           peerNetworkMap      // 每个overlay驱动中，需要存在用于peer传播的信息，首先通过network分类，然后再通过
+	secMap           *encrMap            // secMap 主要用于记录哪些节点需要实现使用ipSec进行加密
+	serfInstance     *serf.Serf          // overlay的driver，拥有一个serf实例，用户维护所有的成员信息
+	networks         networkTable        // 特定driver会管理一个列表，其中所有的network都是该driver创建出来的
+	store            datastore.DataStore // overlay 驱动会在本地存储中存储所有的endpoint信息，需要本地存储地址
+	localStore       datastore.DataStore // overlay 驱动会在远程存储中存储部分信息，需要远程存储地址
+	vxlanIdm         *idm.Idm            // overlay 驱动的需要管理一个ID管理器，该ID管理器会用来实现vxlan ID的管理
+	once             sync.Once           //
+	joinOnce         sync.Once           //
+	localJoinOnce    sync.Once           //
 	keys             []*key
 	sync.Mutex
 }
 
 // Init registers a new instance of overlay driver
+// 初始化Overlay的Driver
 func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
+	// 说明overlay的视角在初始化的时候就设为全局global，合情合理
 	c := driverapi.Capability{
 		DataScope: datastore.GlobalScope,
 	}
 	d := &driver{
 		networks: networkTable{},
+		// 创建一个peerDb
 		peerDb: peerNetworkMap{
 			mp: map[string]*peerMap{},
 		},
@@ -67,6 +70,7 @@ func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
 		config: config,
 	}
 
+	// overlay 驱动需要完成数据的全局存储，d.store主要完成远程存储地址的配置
 	if data, ok := config[netlabel.GlobalKVClient]; ok {
 		var err error
 		dsc, ok := data.(discoverapi.DatastoreConfigData)
@@ -79,6 +83,7 @@ func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
 		}
 	}
 
+	// overlay 驱动需要完成数据的本地存储，d.store主要完成本地存储地址的配置
 	if data, ok := config[netlabel.LocalKVClient]; ok {
 		var err error
 		dsc, ok := data.(discoverapi.DatastoreConfigData)
@@ -91,6 +96,7 @@ func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
 		}
 	}
 
+	// 启动过程中overlay驱动需要重新加载所有应该归该驱动管理的endpoint
 	if err := d.restoreEndpoints(); err != nil {
 		logrus.Warnf("Failure during overlay endpoints restore: %v", err)
 	}
@@ -115,6 +121,7 @@ func (d *driver) restoreEndpoints() error {
 		logrus.Warn("Cannot restore overlay endpoints because local datastore is missing")
 		return nil
 	}
+	// 从本地存储中获取相应的overlay endpoint
 	kvol, err := d.localStore.List(datastore.Key(overlayEndpointPrefix), &endpoint{})
 	if err != nil && err != datastore.ErrKeyNotFound {
 		return fmt.Errorf("failed to read overlay endpoint from store: %v", err)
@@ -125,26 +132,35 @@ func (d *driver) restoreEndpoints() error {
 	}
 	for _, kvo := range kvol {
 		ep := kvo.(*endpoint)
+		// 每个driver的networks属性中存储所有的overlay网络
+		// 通过network id，找到endpoint所在的网络
 		n := d.network(ep.nid)
 		if n == nil {
 			logrus.Debugf("Network (%s) not found for restored endpoint (%s)", ep.nid[0:7], ep.id[0:7])
 			logrus.Debugf("Deleting stale overlay endpoint (%s) from store", ep.id[0:7])
+			// 如果没有找到相应的network，那就删除这个没有network归属的endpoint
 			if err := d.deleteEndpointFromStore(ep); err != nil {
 				logrus.Debugf("Failed to delete stale overlay endpoint (%s) from store", ep.id[0:7])
 			}
 			continue
 		}
+		// 在endpoing应该归属的network中添加此endpoint
 		n.addEndpoint(ep)
 
+		// 需要endpoint的网络地址，获取这个endpoint所在network的子网信息
+		// 不同的enpdpoint有可能存在于不同的subnet子网中
 		s := n.getSubnetforIP(ep.addr)
 		if s == nil {
 			return fmt.Errorf("could not find subnet for endpoint %s", ep.id)
 		}
 
+		// 要让overlay网络重新创建Sandbox
 		if err := n.joinSandbox(true); err != nil {
 			return fmt.Errorf("restore network sandbox failed: %v", err)
 		}
 
+		// 通过endpoint的子网地址，找到相应的子网设备，
+		// 把相应的子网Sandbox完成初始化工作，比如创建网络接口，配置路由规则等
 		if err := n.joinSubnetSandbox(s, true); err != nil {
 			return fmt.Errorf("restore subnet sandbox failed for %q: %v", s.subnetIP.String(), err)
 		}
@@ -159,7 +175,9 @@ func (d *driver) restoreEndpoints() error {
 			return fmt.Errorf("failed to restore overlay sandbox: %v", err)
 		}
 
+		// 增加network中endpoint的存储数量
 		n.incEndpointCount()
+		// restore的过程中，每有一个endpoint，都将endpoint用于通信的信息存入peerDb中
 		d.peerDbAdd(ep.nid, ep.id, ep.addr.IP, ep.addr.Mask, ep.mac, net.ParseIP(d.advertiseAddress), true)
 	}
 	return nil

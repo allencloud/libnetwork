@@ -143,25 +143,25 @@ type sandboxTable map[string]*sandbox
 
 type controller struct {
 	id                     string
-	drvRegistry            *drvregistry.DrvRegistry
-	sandboxes              sandboxTable
-	cfg                    *config.Config
-	stores                 []datastore.DataStore
-	discovery              hostdiscovery.HostDiscovery
-	extKeyListener         net.Listener
-	watchCh                chan *endpoint
-	unWatchCh              chan *endpoint
-	svcRecords             map[string]svcInfo
-	nmap                   map[string]*netWatch
-	serviceBindings        map[serviceKey]*service
-	defOsSbox              osl.Sandbox
-	ingressSandbox         *sandbox
-	sboxOnce               sync.Once
-	agent                  *agent
-	networkLocker          *locker.Locker
-	agentInitDone          chan struct{}
-	keys                   []*types.EncryptionKey
-	clusterConfigAvailable bool
+	drvRegistry            *drvregistry.DrvRegistry    // 用于存储所有的driver，包括每一个driver的配置信息
+	sandboxes              sandboxTable                // 存放在内存的中的Sandbox列表
+	cfg                    *config.Config              // 由docker daemon传入的libnetwork配置
+	stores                 []datastore.DataStore       // 创建出的网络信息存储，比如local的boltdb，global的etcd等
+	discovery              hostdiscovery.HostDiscovery // 用于接收节点发现的事件
+	extKeyListener         net.Listener                // 一个listener，主要监听一个socket，以保障获取外部的网络密钥输入
+	watchCh                chan *endpoint              // 监听是否有新的endpoint创建
+	unWatchCh              chan *endpoint              // 监听是否有endpoint需要被删除
+	svcRecords             map[string]svcInfo          // 一个controller中，收集的所有的service记录
+	nmap                   map[string]*netWatch        //
+	serviceBindings        map[serviceKey]*service     //
+	defOsSbox              osl.Sandbox                 //
+	ingressSandbox         *sandbox                    // 每一个controller都有一个指向ingress snadbox的指针, 如果不启动swarm mode的话，指针应该为空
+	sboxOnce               sync.Once                   //
+	agent                  *agent                      // 每一个controller，都有一个重要的agent对象，负责gossip以及store同步的事
+	networkLocker          *locker.Locker              //
+	agentInitDone          chan struct{}               // 一个管道，标志着agent的初始化工作是否完成
+	keys                   []*types.EncryptionKey      //
+	clusterConfigAvailable bool                        //
 	sync.Mutex
 }
 
@@ -174,7 +174,7 @@ type initializer struct {
 func New(cfgOptions ...config.Option) (NetworkController, error) {
 	c := &controller{
 		id:              stringid.GenerateRandomID(),
-		cfg:             config.ParseConfigOptions(cfgOptions...),
+		cfg:             config.ParseConfigOptions(cfgOptions...), // 完成配置的解析，其中store方面有默认值
 		sandboxes:       sandboxTable{},
 		svcRecords:      make(map[string]svcInfo),
 		serviceBindings: make(map[serviceKey]*service),
@@ -182,16 +182,24 @@ func New(cfgOptions ...config.Option) (NetworkController, error) {
 		networkLocker:   locker.New(),
 	}
 
+	// 初始化Store的过程非常重要，一方面通过store的配置信息完成多种store的初始化，local和global(如果有必要的话)
+	// 开始对store进行监控，watch，
 	if err := c.initStores(); err != nil {
 		return nil, err
 	}
 
+	// 初始化驱动存储仓库，只是注册了几个notify func
 	drvRegistry, err := drvregistry.New(c.getStore(datastore.LocalScope), c.getStore(datastore.GlobalScope), c.RegisterDriver, nil, c.cfg.PluginGetter)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, i := range getInitializers(c.cfg.Daemon.Experimental) {
+		// getInitializers 返回各类driver的初始化函数，比如{overlay.Init, "overlay"}
+		// type initializer struct {
+		//     fn    drvregistry.InitFunc // overlay.Init
+		//     ntype string // "overlay"
+		// }
 		var dcfg map[string]interface{}
 
 		// External plugins don't need config passed through daemon. They can
@@ -200,11 +208,14 @@ func New(cfgOptions ...config.Option) (NetworkController, error) {
 			dcfg = c.makeDriverConfig(i.ntype)
 		}
 
+		// 在空的网络驱动存储仓库中，添加具体的驱动，比如bridge，host，overlay，macvlan...
 		if err := drvRegistry.AddDriver(i.ntype, i.fn, dcfg); err != nil {
 			return nil, err
 		}
 	}
 
+	// 初始化ipamDriver，也就是不同的网络地址空间分配器allocator
+	// 并将allocator存储在drvRegistry中
 	if err = initIPAMDrivers(drvRegistry, nil, c.getStore(datastore.GlobalScope)); err != nil {
 		return nil, err
 	}
@@ -219,15 +230,23 @@ func New(cfgOptions ...config.Option) (NetworkController, error) {
 		}
 	}
 
+	// 遍历libnetwork管理的所有network实例，对实例执行 populateSpecial 操作
+	// populateSpecial就看网络network是否是host或者null，若是，则说明时SpecialDriver，
+	// 需要创建该网络，并添加到controller中
 	c.WalkNetworks(populateSpecial)
 
 	// Reserve pools first before doing cleanup. Otherwise the
 	// cleanups of endpoint/network and sandbox below will
 	// generate many unnecessary warnings
+
+	// 从store拿出所有的network的，也是在初始化阶段，
+	// 通过store的中network信息，来初始化allocator的网络地址空间，也相当于预留地址空间
 	c.reservePools()
 
 	// Cleanup resources
 	c.sandboxCleanup(c.cfg.ActiveSandboxes)
+
+	// 重新加载endpoint的信息
 	c.cleanupLocalEndpoints()
 	c.networkCleanup()
 
@@ -238,14 +257,19 @@ func New(cfgOptions ...config.Option) (NetworkController, error) {
 	return c, nil
 }
 
+// docker swarm init时会初始化cluster对象，初始化时需要 startNewNode，startNewNode过程中要为
+// cluster设置集群提供能力，也就是daemon.SetClusterProvider，随即变成libnetwork.Controller的SetClusterProvider
 func (c *controller) SetClusterProvider(provider cluster.Provider) {
 	c.Lock()
 	c.cfg.Daemon.ClusterProvider = provider
 	disableProviderCh := c.cfg.Daemon.DisableProvider
 	c.Unlock()
 	if provider != nil {
+		// 如果是集群模式，需要初始化agent
+		// 开始初始化 agent
 		go c.clusterAgentInit()
 	} else {
+		// 如果集群提供能力为空，则需要停止集群能力的运行
 		disableProviderCh <- struct{}{}
 	}
 }
@@ -309,6 +333,10 @@ func (c *controller) clusterAgentInit() {
 	clusterProvider := c.cfg.Daemon.ClusterProvider
 	for {
 		select {
+		// clusterProvider.ListenClusterEvents()为管道，该管道接收集群参与者变化的消息，
+		// 当startNewNode 时，clusterProvider.configEvent会被传入值
+		//（见docker/daemon/cluster.go#L335）
+		// 所以一启动，这里就可以往下执行agentSetup
 		case <-clusterProvider.ListenClusterEvents():
 			if !c.isDistributedControl() {
 				c.Lock()
@@ -322,6 +350,7 @@ func (c *controller) clusterAgentInit() {
 				}
 			}
 		case <-c.cfg.Daemon.DisableProvider:
+			// 开始关闭libnetwork的集群能力
 			c.Lock()
 			c.clusterConfigAvailable = false
 			c.agentInitDone = make(chan struct{})
@@ -336,6 +365,7 @@ func (c *controller) clusterAgentInit() {
 			// should still be present when cleaning up
 			// service bindings
 			c.agentClose()
+			// 删除所有service与负载均衡以及ingress的绑定
 			c.cleanupServiceBindings("")
 
 			c.clearIngress(true)
@@ -357,6 +387,7 @@ func (c *controller) AgentInitWait() {
 	}
 }
 
+// 为每种类型的 network driver 生成网络驱动配置
 func (c *controller) makeDriverConfig(ntype string) map[string]interface{} {
 	if c.cfg == nil {
 		return nil
@@ -364,6 +395,7 @@ func (c *controller) makeDriverConfig(ntype string) map[string]interface{} {
 
 	config := make(map[string]interface{})
 
+	// 把标签配置解析出来，放入最终需要返回的config中
 	for _, label := range c.cfg.Daemon.Labels {
 		if !strings.HasPrefix(netlabel.Key(label), netlabel.DriverPrefix+"."+ntype) {
 			continue
@@ -372,6 +404,9 @@ func (c *controller) makeDriverConfig(ntype string) map[string]interface{} {
 		config[netlabel.Key(label)] = netlabel.Value(label)
 	}
 
+	// 取出用户指定的相应类型网络驱动的配置，用户输入的原始数据
+	// 用户可以配置c.cfg.Daemon.DriverCfg，实际上在docker daemon中，docker仅仅
+	// 允许配置bridge网络驱动的参数
 	drvCfg, ok := c.cfg.Daemon.DriverCfg[ntype]
 	if ok {
 		for k, v := range drvCfg.(map[string]interface{}) {
@@ -379,6 +414,8 @@ func (c *controller) makeDriverConfig(ntype string) map[string]interface{} {
 		}
 	}
 
+	// 这一部分，根据libnetwork.controller的store参数来初始化网络驱动的配置参数
+	// 默认只有一个local的Scope
 	for k, v := range c.cfg.Scopes {
 		if !v.IsValid() {
 			continue
@@ -536,7 +573,9 @@ func (c *controller) initDiscovery(watcher discovery.Watcher) error {
 		return fmt.Errorf("discovery initialization requires a valid configuration")
 	}
 
+	// 新建一个discovery对象实例
 	c.discovery = hostdiscovery.NewHostDiscovery(watcher)
+	// 立即开始监听节点的新加入、退出等事件
 	return c.discovery.Watch(c.activeCallback, c.hostJoinCallback, c.hostLeaveCallback)
 }
 
@@ -547,10 +586,12 @@ func (c *controller) activeCallback() {
 	}
 }
 
+// 当有节点加入集群的时候，hostdiscovery监听到事件，随后回调这个函数
 func (c *controller) hostJoinCallback(nodes []net.IP) {
 	c.processNodeDiscovery(nodes, true)
 }
 
+// 当有节点离开集群的时候，hostdiscovery监听到事件，随后回调这个函数
 func (c *controller) hostLeaveCallback(nodes []net.IP) {
 	c.processNodeDiscovery(nodes, false)
 }
@@ -614,6 +655,7 @@ func (c *controller) isManager() bool {
 func (c *controller) isAgent() bool {
 	c.Lock()
 	defer c.Unlock()
+	// 如果不是Swarm Mode的集群模式，那么返回false，即不是agent
 	if c.cfg == nil || c.cfg.Daemon.ClusterProvider == nil {
 		return false
 	}
@@ -621,6 +663,7 @@ func (c *controller) isAgent() bool {
 }
 
 func (c *controller) isDistributedControl() bool {
+	// 如果本节点不是swarm集群中的manager，也不是agent
 	return !c.isManager() && !c.isAgent()
 }
 
@@ -663,11 +706,13 @@ func (c *controller) NewNetwork(networkType, name string, id string, options ...
 
 	defaultIpam := defaultIpamForNetworkType(networkType)
 	// Construct the network object
+	// 新建一个libnetwork管理层面的网络对象，并不代表有具体driver的network
+	// 具体的network在每个driver中，在drvregistry中
 	network := &network{
 		name:        name,
 		networkType: networkType,
 		generic:     map[string]interface{}{netlabel.GenericData: make(map[string]string)},
-		ipamType:    defaultIpam,
+		ipamType:    defaultIpam, // "default"
 		id:          id,
 		created:     time.Now(),
 		ctrlr:       c,
@@ -701,22 +746,29 @@ func (c *controller) NewNetwork(networkType, name string, id string, options ...
 		return nil, err
 	}
 
+	// 通过相对应的ipam为network分配网络地址
 	err = network.ipamAllocate()
 	if err != nil {
 		return nil, err
 	}
+
 	defer func() {
+		// 如果这次新建工作失败了，那么ipam需要把相应的资源回收
 		if err != nil {
 			network.ipamRelease()
 		}
 	}()
 
+	// 刚才仅仅是初始化network对象，并通过network的ipamV4Config在ipam/allocator中申请地址
+	// addNetwork 现在是要通过具体的driver来创建实际的网络network
 	err = c.addNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+
 	defer func() {
 		if err != nil {
+			// 如果创建网络过程中失败，则需要删除网络
 			if e := network.deleteNetwork(); e != nil {
 				logrus.Warnf("couldn't roll back driver network on network %s creation failure: %v", network.name, err)
 			}
@@ -727,9 +779,12 @@ func (c *controller) NewNetwork(networkType, name string, id string, options ...
 	// end up with a datastore containing a network and not an epCnt,
 	// in case of an ungraceful shutdown during this function call.
 	epCnt := &endpointCnt{n: network}
+
+	// 将endpointCnt更新到store中
 	if err = c.updateToStore(epCnt); err != nil {
 		return nil, err
 	}
+
 	defer func() {
 		if err != nil {
 			if e := c.deleteFromStore(epCnt); e != nil {
@@ -739,11 +794,17 @@ func (c *controller) NewNetwork(networkType, name string, id string, options ...
 	}()
 
 	network.epCnt = epCnt
+
+	// 将network更新到store中
 	if err = c.updateToStore(network); err != nil {
 		return nil, err
 	}
 
+	// 是否有必要所有的network，都要执行n.joinCluster()
+	// 因为n.joinCluster()需要networkdb添加这个网络，并触发一个事件
+	// 最终会将网络的信息在网络间gossip传播
 	joinCluster(network)
+
 	if !c.isDistributedControl() {
 		c.Lock()
 		arrangeIngressFilterRule()
@@ -763,6 +824,8 @@ var joinCluster NetworkWalker = func(nw Network) bool {
 }
 
 func (c *controller) reservePools() {
+	// 从store拿出所有的network的，也是在初始化阶段，
+	// 通过store的中network信息，来初始化allocator的网络地址空间，也相当于预留地址空间
 	networks, err := c.getNetworksForScope(datastore.LocalScope)
 	if err != nil {
 		logrus.Warnf("Could not retrieve networks from local store during ipam allocation for existing networks: %v", err)
@@ -795,7 +858,9 @@ func (c *controller) reservePools() {
 				}
 			}
 		}
-		// Reserve pools
+
+		// Reserve pools，
+		// 将network中的信息，进行分配，也就是在allocator的地址空间中预留这些地址
 		if err := n.ipamAllocate(); err != nil {
 			logrus.Warnf("Failed to allocate ipam pool(s) for network %q (%s): %v", n.Name(), n.ID(), err)
 		}
@@ -811,6 +876,7 @@ func (c *controller) reservePools() {
 			continue
 		}
 		for _, ep := range epl {
+			// 将endpoint的网络地址信息在allocator中预留
 			if err := ep.assignAddress(ipam, true, ep.Iface().AddressIPv6() != nil); err != nil {
 				logrus.Warnf("Failed to reserve current address for endpoint %q (%s) on network %q (%s)",
 					ep.Name(), ep.ID(), n.Name(), n.ID())
@@ -829,16 +895,20 @@ func doReplayPoolReserve(n *network) bool {
 }
 
 func (c *controller) addNetwork(n *network) error {
+	// 通过network中的networkType，获取相应的driver
 	d, err := n.driver(true)
 	if err != nil {
 		return err
 	}
 
 	// Create the network
+	// 通过具体的driver来创建network，传入的数据是id，generic，以及ipv4和ipv6的IPamData
 	if err := d.CreateNetwork(n.id, n.generic, n, n.getIPData(4), n.getIPData(6)); err != nil {
 		return err
 	}
 
+	// 通过具体的driver创建完network之后
+	// 需要开始启动一个网络内部的dns解析功能
 	n.startResolver()
 
 	return nil
@@ -852,6 +922,8 @@ func (c *controller) Networks() []Network {
 		logrus.Error(err)
 	}
 
+	// 查看libnetwork管理的所有网络，
+	// 如果这些网络中有些正处于删除阶段，则不予考虑在内
 	for _, n := range networks {
 		if n.inDelete {
 			continue
@@ -893,6 +965,8 @@ func (c *controller) NetworkByName(name string) (Network, error) {
 	return n, nil
 }
 
+// 通过用户传入的ID，获取在Store中存储的network信息，
+// 这个事controller层面的network，并非是driver层面的network
 func (c *controller) NetworkByID(id string) (Network, error) {
 	if id == "" {
 		return nil, ErrInvalidID(id)
@@ -974,6 +1048,8 @@ func (c *controller) NewSandbox(containerID string, options ...SandboxOption) (s
 		}
 	}()
 
+	// 为sandbox设置域名解析所需要的所有文件，
+	// 包括 /etc/hosts, /etc/resolv.conf
 	if err = sb.setupResolutionFiles(); err != nil {
 		return nil, err
 	}

@@ -30,8 +30,8 @@ type ipamTable map[string]*ipamData
 // DrvRegistry holds the registry of all network drivers and IPAM drivers that it knows about.
 type DrvRegistry struct {
 	sync.Mutex
-	drivers      driverTable
-	ipamDrivers  ipamTable
+	drivers      driverTable // 存储多个不同的driver，比如bridge，host, overlay, macvlan
+	ipamDrivers  ipamTable   // 存储多个不同的网络ipam的allocator，里面包含网络地址空间
 	dfn          DriverNotifyFunc
 	ifn          IPAMNotifyFunc
 	pluginGetter plugingetter.PluginGetter
@@ -60,7 +60,7 @@ func New(lDs, gDs interface{}, dfn DriverNotifyFunc, ifn IPAMNotifyFunc, pg plug
 		drivers:      make(driverTable),
 		ipamDrivers:  make(ipamTable),
 		dfn:          dfn,
-		ifn:          ifn,
+		ifn:          ifn, // 在controller.go中调用的时候ifn为nil
 		pluginGetter: pg,
 	}
 
@@ -204,6 +204,7 @@ func (r *DrvRegistry) registerIpamDriver(name string, driver ipamapi.Ipam, caps 
 		return types.InternalErrorf("ipam driver %q failed to return default address spaces: %v", name, err)
 	}
 
+	// 新建drvregistry实例的时候，ifn就一直是nil，所以以下block并不掉用
 	if r.ifn != nil {
 		if err := r.ifn(name, driver, caps); err != nil {
 			return err

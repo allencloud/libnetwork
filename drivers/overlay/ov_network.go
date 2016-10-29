@@ -26,22 +26,22 @@ import (
 )
 
 var (
-	hostMode    bool
-	networkOnce sync.Once
-	networkMu   sync.Mutex
-	vniTbl      = make(map[uint32]string)
+	hostMode    bool                      // overlay驱动中vxlan是否为host模式
+	networkOnce sync.Once                 // 整个overlay 驱动在运行过程中，只需要运行一次networkOnce
+	networkMu   sync.Mutex                // 访问vniTbl列表时，需要上锁，线程需要安全
+	vniTbl      = make(map[uint32]string) // 全局的overlay驱动存储的vni表，key为vni值，value为一个路径
 )
 
-type networkTable map[string]*network
+type networkTable map[string]*network // 整个overlay驱动拥有的网络列表
 
 type subnet struct {
 	once      *sync.Once
-	vxlanName string
-	brName    string
-	vni       uint32
-	initErr   error
-	subnetIP  *net.IPNet
-	gwIP      *net.IPNet
+	vxlanName string     // vxlan 名称
+	brName    string     // 网桥名称
+	vni       uint32     // vxlan network identifier, 每一个子网有一个vni
+	initErr   error      // 子网初始化错误
+	subnetIP  *net.IPNet // 子网的网络地址，子网包含网络IP地址，以及网络掩码
+	gwIP      *net.IPNet // 子网的网关地址
 }
 
 type subnetJSON struct {
@@ -50,20 +50,23 @@ type subnetJSON struct {
 	Vni      uint32
 }
 
+// 这个network属于通过overlay网络驱动创建出来的network，存储在driver中的networkTable
+// 每个具体的driver都会有对应的network列表
+// 与controller中的network结构体不一样，那是一个全局的network，不分类型，包含统一的信息
 type network struct {
 	id        string
 	dbIndex   uint64
 	dbExists  bool
-	sbox      osl.Sandbox
-	endpoints endpointTable
-	driver    *driver
-	joinCnt   int
-	once      *sync.Once
-	initEpoch int
-	initErr   error
-	subnets   []*subnet
-	secure    bool
-	mtu       int
+	sbox      osl.Sandbox   // 每一个network都会有相对应的sandbox
+	endpoints endpointTable // overlay网络中藏有的endpoint列表
+	driver    *driver       // overlay网络指向的驱动
+	joinCnt   int           // overlay网络有多少次endpoint加入进来
+	once      *sync.Once    // 每一个网络需要做一个初始化initSandbox的工作
+	initEpoch int           //
+	initErr   error         // 看network在初始化过程中是否出错
+	subnets   []*subnet     // overlay网络中包含的子网
+	secure    bool          // 是否需要对该overlay网络进行ipsec加密
+	mtu       int           // 为overlay网络设定最大传输单元
 	sync.Mutex
 }
 
@@ -85,6 +88,7 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 
 	// Since we perform lazy configuration make sure we try
 	// configuring the driver when we enter CreateNetwork
+	// 假如driver的 vxlan id没有配置，则需要先配置
 	if err := d.configure(); err != nil {
 		return err
 	}
@@ -98,8 +102,12 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 	}
 
 	vnis := make([]uint32, 0, len(ipV4Data))
+
+	// if gval, ok := option["com.docker.network.generic"]; ok {
 	if gval, ok := option[netlabel.GenericData]; ok {
 		optMap := gval.(map[string]string)
+		// if val, ok := optMap["com.docker.network.driver.overlay.vxlanid_list"]
+		// 说明用户可以通过options来为输入vxlan ID
 		if val, ok := optMap[netlabel.OverlayVxlanIDList]; ok {
 			logrus.Debugf("overlay: Received vxlan IDs: %s", val)
 			vniStrings := strings.Split(val, ",")
@@ -112,9 +120,11 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 				vnis = append(vnis, uint32(vni))
 			}
 		}
-		if _, ok := optMap[secureOption]; ok {
+		if _, ok := optMap["encrypted"]; ok {
 			n.secure = true
 		}
+
+		// optMap["com.docker.network.driver.mtu"]
 		if val, ok := optMap[netlabel.DriverMTU]; ok {
 			var err error
 			if n.mtu, err = strconv.Atoi(val); err != nil {
@@ -129,9 +139,12 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 	// If we are getting vnis from libnetwork, either we get for
 	// all subnets or none.
 	if len(vnis) != 0 && len(vnis) < len(ipV4Data) {
+		// 如果输入的vni个数少于ipV4Data, 那么就抛出不足的错误。
+		// 如果输入的vni个数大于的话，岂不是不予处理
 		return fmt.Errorf("insufficient vnis(%d) passed to overlay", len(vnis))
 	}
 
+	// 根据ipV4Data的个数来创建network中的子网个数
 	for i, ipd := range ipV4Data {
 		s := &subnet{
 			subnetIP: ipd.Pool,
@@ -159,11 +172,14 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 	}
 
 	if nInfo != nil {
+		// ovPeerTable = "overlay_peer_table"
 		if err := nInfo.TableEventRegister(ovPeerTable, driverapi.EndpointObject); err != nil {
 			return err
 		}
 	}
 
+	// 仅仅将network加入driver的列表中
+	// 创建一个网络而已，不会涉及到任何容器，endpoint等信息。
 	d.addNetwork(n)
 	return nil
 }
@@ -183,6 +199,7 @@ func (d *driver) DeleteNetwork(nid string) error {
 		return fmt.Errorf("could not find network with id %s", nid)
 	}
 
+	// 删除网络前，需要关心network关联的endpoint应该解除联系
 	for _, ep := range n.endpoints {
 		if ep.ifName != "" {
 			if link, err := ns.NlHandle().LinkByName(ep.ifName); err != nil {
@@ -300,6 +317,8 @@ func (n *network) destroySandbox() {
 }
 
 func populateVNITbl() {
+	// 遍历路径filepath.Dir(osl.GenerateKey("walk"))下的所有文件，并执行相应的WalkFunc
+	//
 	filepath.Walk(filepath.Dir(osl.GenerateKey("walk")),
 		func(path string, info os.FileInfo, err error) error {
 			_, fname := filepath.Split(path)
@@ -344,6 +363,7 @@ func populateVNITbl() {
 }
 
 func networkOnceInit() {
+	// 基本上属于将原有的vni放入overlay全局的vni列表中
 	populateVNITbl()
 
 	if os.Getenv("_OVERLAY_HOST_MODE") != "" {
@@ -351,12 +371,14 @@ func networkOnceInit() {
 		return
 	}
 
+	// 在overlay驱动的第一次初始化过程中，尝试创建一个测试版的vxlan网络接口
 	err := createVxlan("testvxlan", 1, 0)
 	if err != nil {
 		logrus.Errorf("Failed to create testvxlan interface: %v", err)
 		return
 	}
 
+	// 保证在初始化过程中，推出之前会删除这个测试版的vxlan的网络接口
 	defer deleteInterface("testvxlan")
 
 	path := "/proc/self/ns/net"
@@ -382,6 +404,8 @@ func networkOnceInit() {
 	}
 }
 
+// 为一个子网生成Vxlan的名字
+// 名字的形式为 vx-aaaaaa-bbbbb,
 func (n *network) generateVxlanName(s *subnet) string {
 	id := n.id
 	if len(n.id) > 5 {
@@ -391,6 +415,8 @@ func (n *network) generateVxlanName(s *subnet) string {
 	return "vx-" + fmt.Sprintf("%06x", n.vxlanID(s)) + "-" + id
 }
 
+// 为一个子网声称网桥的名字
+// 形式为 ov-aaaaaa-bbbbb
 func (n *network) generateBridgeName(s *subnet) string {
 	id := n.id
 	if len(n.id) > 5 {
@@ -400,6 +426,7 @@ func (n *network) generateBridgeName(s *subnet) string {
 	return n.getBridgeNamePrefix(s) + "-" + id
 }
 
+// 形式为 ov-aaaaa
 func (n *network) getBridgeNamePrefix(s *subnet) string {
 	return "ov-" + fmt.Sprintf("%06x", n.vxlanID(s))
 }
@@ -514,11 +541,15 @@ func (n *network) setupSubnetSandbox(s *subnet, brName, vxlanName string) error 
 	return nil
 }
 
+// 一个network中有可能有多个subnet子网
+// initSubnetSandbox实现将这个subnet子网内部的所有的初始化工作
 func (n *network) initSubnetSandbox(s *subnet, restore bool) error {
-	brName := n.generateBridgeName(s)
-	vxlanName := n.generateVxlanName(s)
+	brName := n.generateBridgeName(s)   // ov-aaaaaa-bbbbb
+	vxlanName := n.generateVxlanName(s) // ox-aaaaaa-bbbbb
 
 	if restore {
+		// 完成网络的Sandbox内的网络接口restore，
+		// 包括将网络接口启动，重启还需要完成网络路由规则的初始化
 		if err := n.restoreSubnetSandbox(s, brName, vxlanName); err != nil {
 			return err
 		}
@@ -529,6 +560,7 @@ func (n *network) initSubnetSandbox(s *subnet, restore bool) error {
 	}
 
 	n.Lock()
+	// 为一个子网创建vxlan的名字以及网桥的名称
 	s.vxlanName = vxlanName
 	s.brName = brName
 	n.Unlock()
@@ -571,15 +603,20 @@ func (n *network) cleanupStaleSandboxes() {
 		})
 }
 
+// 每一个network网络都需要实现sandbox的初始化
 func (n *network) initSandbox(restore bool) error {
 	n.Lock()
 	n.initEpoch++
 	n.Unlock()
 
+	// 整个overlay 驱动在运行过程中，只需要运行一次networkOnce，
+	// 1. 以保障每个engine上的vxlan网络是可以用来创建的；
+	// 2. 同时将机器上现有的vxlan网络接管到overlay网络的vni列表中
 	networkOnce.Do(networkOnceInit)
 
 	if !restore {
 		if hostMode {
+			// 将该网络的network id添加到iptables链中
 			if err := addNetworkChain(n.id[:12]); err != nil {
 				return err
 			}
@@ -605,6 +642,7 @@ func (n *network) initSandbox(restore bool) error {
 		return fmt.Errorf("could not get network sandbox (oper %t): %v", restore, err)
 	}
 
+	// 将这个network的Sandbox赋值
 	n.setSandbox(sbox)
 
 	if !restore {
@@ -909,12 +947,15 @@ func (n *network) releaseVxlanID() ([]uint32, error) {
 		if n.driver.vxlanIdm != nil {
 			vni := n.vxlanID(s)
 			vnis = append(vnis, vni)
+			// 通过指定driver指定的Idm来释放vni
 			n.driver.vxlanIdm.Release(uint64(vni))
 		}
 
+		// 为每个子网的vxlan ID 设置为0
 		n.setVxlanID(s, 0)
 	}
 
+	// 返回所有被释放到的vni
 	return vnis, nil
 }
 

@@ -49,9 +49,9 @@ type InterfaceInfo interface {
 }
 
 type endpointInterface struct {
-	mac       net.HardwareAddr
-	addr      *net.IPNet
-	addrv6    *net.IPNet
+	mac       net.HardwareAddr // endpoint 所属网络接口的硬件地址mac
+	addr      *net.IPNet       // endpoint 所属网络接口的网络地址ipv4
+	addrv6    *net.IPNet       // endpoint 所属网络接口的网络地址ipv6
 	llAddrs   []*net.IPNet
 	srcName   string
 	dstPrefix string
@@ -167,9 +167,9 @@ func (epi *endpointInterface) CopyTo(dstEpi *endpointInterface) error {
 }
 
 type endpointJoinInfo struct {
-	gw                    net.IP
-	gw6                   net.IP
-	StaticRoutes          []*types.StaticRoute
+	gw                    net.IP               // endpoint的网关地址ipv4
+	gw6                   net.IP               // endpoint的网关地址ipv6
+	StaticRoutes          []*types.StaticRoute // 需要在endpoint之上完成的静态路由纪录
 	driverTableEntries    []*tableEntry
 	disableGatewayService bool
 }

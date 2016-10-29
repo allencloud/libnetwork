@@ -22,11 +22,12 @@ const (
 	minNetSize   = 8
 	minNetSizeV6 = 64
 	// datastore keyes for ipam objects
-	dsConfigKey = "ipam/" + ipamapi.DefaultIPAM + "/config"
+	dsConfigKey = "ipam/" + ipamapi.DefaultIPAM + "/config" // "ipam/default/config"
 	dsDataKey   = "ipam/" + ipamapi.DefaultIPAM + "/data"
 )
 
 // Allocator provides per address space ipv4/ipv6 book keeping
+// 维护着
 type Allocator struct {
 	// Predefined pools for default address spaces
 	predefined map[string][]*net.IPNet
@@ -43,8 +44,8 @@ func NewAllocator(lcDs, glDs datastore.DataStore) (*Allocator, error) {
 
 	// Load predefined subnet pools
 	a.predefined = map[string][]*net.IPNet{
-		localAddressSpace:  ipamutils.PredefinedBroadNetworks,
-		globalAddressSpace: ipamutils.PredefinedGranularNetworks,
+		"LocalDefault":  ipamutils.PredefinedBroadNetworks,
+		"GlobalDefault": ipamutils.PredefinedGranularNetworks,
 	}
 
 	// Initialize bitseq map
@@ -56,15 +57,18 @@ func NewAllocator(lcDs, glDs datastore.DataStore) (*Allocator, error) {
 		as string
 		ds datastore.DataStore
 	}{
-		{localAddressSpace, lcDs},
-		{globalAddressSpace, glDs},
+		{"LocalDefault", lcDs},
+		{"GlobalDefault", glDs},
 	} {
+		// 建立allocator实例时，最重要的自然是初始化网络地址空间。
 		a.initializeAddressSpace(aspc.as, aspc.ds)
 	}
 
 	return a, nil
 }
 
+// 初始化的时候，有可能是空的，但是store中却有着遗留的数据
+// 需要完成重新刷新，即将store中的内容，加载到libnetwork的内存中，即allocator的数据结构中
 func (a *Allocator) refresh(as string) error {
 	aSpace, err := a.getAddressSpaceFromStore(as)
 	if err != nil {
@@ -87,9 +91,11 @@ func (a *Allocator) updateBitMasks(aSpace *addrSpace) error {
 
 	aSpace.Lock()
 	for k, v := range aSpace.subnets {
+		// 遍历网络地址空间的子网，subnets -> map[SubnetKey]*PoolData
+		// 如果*PoolData没有网络地址范围，也就相当于没有子网范围，需要更新或者添加子网掩码信息
 		if v.Range == nil {
-			kk := k
-			vv := v
+			kk := k // 类型为 SubnetKey
+			vv := v // 类型为 *PoolData
 			inserterList = append(inserterList, func() error { return a.insertBitMask(kk, vv.Pool) })
 		}
 	}
@@ -108,10 +114,12 @@ func (a *Allocator) updateBitMasks(aSpace *addrSpace) error {
 }
 
 // Checks for and fixes damaged bitmask.
+// 初始化阶段中，需要保证网络地址信息的全局一致性（global），或者内存与磁盘的数据的一致性（local）
 func (a *Allocator) checkConsistency(as string) {
 	var sKeyList []SubnetKey
 
 	// Retrieve this address space's configuration and bitmasks from the datastore
+	// 从store中获取相应的数据，从而重新刷新allocator内存中的网络地址空间
 	a.refresh(as)
 	a.Lock()
 	aSpace, ok := a.addrSpaces[as]
@@ -119,6 +127,8 @@ func (a *Allocator) checkConsistency(as string) {
 	if !ok {
 		return
 	}
+
+	// 更新子网掩码
 	a.updateBitMasks(aSpace)
 
 	aSpace.Lock()
@@ -140,6 +150,7 @@ func (a *Allocator) checkConsistency(as string) {
 	}
 }
 
+// 对于每一个不同scope的网络地址，libnetwork需要对allocator的不同scope网络地址范围初始化
 func (a *Allocator) initializeAddressSpace(as string, ds datastore.DataStore) error {
 	scope := ""
 	if ds != nil {
@@ -153,15 +164,18 @@ func (a *Allocator) initializeAddressSpace(as string, ds datastore.DataStore) er
 			return types.ForbiddenErrorf("a datastore is already configured for the address space %s", as)
 		}
 	}
+
+	// 初始化，scope、datastore，id等
 	a.addrSpaces[as] = &addrSpace{
-		subnets: map[SubnetKey]*PoolData{},
-		id:      dsConfigKey + "/" + as,
+		subnets: map[SubnetKey]*PoolData{}, // 初始化阶段为空
+		id:      dsConfigKey + "/" + as,    // "ipam/default/config/local"
 		scope:   scope,
 		ds:      ds,
 		alloc:   a,
 	}
 	a.Unlock()
 
+	// 解决allocator内存中数据的一致性问题，最要是内存与store
 	a.checkConsistency(as)
 
 	return nil

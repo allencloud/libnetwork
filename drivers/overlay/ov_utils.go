@@ -54,6 +54,7 @@ func createVethPair() (string, string, error) {
 	return name1, name2, nil
 }
 
+// 通过netlink创建一个VxLan，设定Vxlan的名字，VNI以及网络的MTU
 func createVxlan(name string, vni uint32, mtu int) error {
 	defer osl.InitOSContext()()
 
@@ -61,12 +62,13 @@ func createVxlan(name string, vni uint32, mtu int) error {
 		LinkAttrs: netlink.LinkAttrs{Name: name, MTU: mtu},
 		VxlanId:   int(vni),
 		Learning:  true,
-		Port:      vxlanPort,
+		Port:      vxlanPort, // 4789
 		Proxy:     true,
 		L3miss:    true,
 		L2miss:    true,
 	}
 
+	// 真实开始创建一个vxlan的网络接口
 	if err := ns.NlHandle().LinkAdd(vxlan); err != nil {
 		return fmt.Errorf("error creating vxlan interface: %v", err)
 	}

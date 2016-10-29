@@ -36,10 +36,11 @@ func (b ByTime) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b ByTime) Less(i, j int) bool { return b[i].LamportTime < b[j].LamportTime }
 
 type agent struct {
-	networkDB         *networkdb.NetworkDB
-	bindAddr          string
-	advertiseAddr     string
-	epTblCancel       func()
+	networkDB     *networkdb.NetworkDB
+	bindAddr      string
+	advertiseAddr string
+	epTblCancel   func()
+	// 当关闭libnetwork的集群能力时，agent需要为每一个driver执行相应的取消操作，为一个数组
 	driverCancelFuncs map[string][]func()
 	sync.Mutex
 }
@@ -187,18 +188,30 @@ func (c *controller) agentSetup() error {
 	clusterProvider := c.cfg.Daemon.ClusterProvider
 	agent := c.agent
 	c.Unlock()
+
+	// 本机节点的实际地址
 	bindAddr := clusterProvider.GetLocalAddress()
+
+	// 本机节点广播的地址，外部节点访问该节点的地址
 	advAddr := clusterProvider.GetAdvertiseAddress()
+
+	// 一个已知的远程Manager的广播地址
 	remote := clusterProvider.GetRemoteAddress()
 	remoteAddr, _, _ := net.SplitHostPort(remote)
+
+	// 本机节点监听的地址
 	listen := clusterProvider.GetListenAddress()
 	listenAddr, _, _ := net.SplitHostPort(listen)
 
 	logrus.Infof("Initializing Libnetwork Agent Listen-Addr=%s Local-addr=%s Adv-addr=%s Remote-addr =%s", listenAddr, bindAddr, advAddr, remoteAddr)
+
 	if advAddr != "" && agent == nil {
+		// 如果没有广播地址不为空，且还没有初始化的agent，则需要初始化agent
 		if err := c.agentInit(listenAddr, bindAddr, advAddr); err != nil {
 			logrus.Errorf("Error in agentInit : %v", err)
 		} else {
+			// 初始化agent成功之后，需要检测每个driver的DataScope，如果是global，则需要对该driver
+			// 执行agentDriverNotify，
 			c.drvRegistry.WalkDrivers(func(name string, driver driverapi.Driver, capability driverapi.Capability) bool {
 				if capability.DataScope == datastore.GlobalScope {
 					c.agentDriverNotify(driver)
@@ -335,17 +348,24 @@ func (c *controller) agentDriverNotify(d driverapi.Driver) {
 		return
 	}
 
+	// DiscoverNew 完成不同类型的 driver 在面对新 node 添加进入 cluster 时，所做的通知；
+	// 没有集群能力的 driver 对此方法的实现为返回nil，即对此不对响应，而 overlay driver 等需要做出通知
+	// overlay driver根据 DiscoverNew 方法中传入的 data 类型来判断是属于哪种类型的实践，
+	// 比如以下，data类型为 NodeDiscoveryData， 则说明有新的 node 加入集群
 	d.DiscoverNew(discoverapi.NodeDiscovery, discoverapi.NodeDiscoveryData{
 		Address:     agent.advertiseAddr,
 		BindAddress: agent.bindAddr,
 		Self:        true,
 	})
 
+	// overlay driver根据DiscoverNew方法中传入的data类型来判断是属于哪种类型的实践，
+	// data类型为 DriverEncryptionConfig, 则说明需要为driver设置加密信息
 	drvEnc := discoverapi.DriverEncryptionConfig{}
 	keys, tags := c.getKeys(subsysIPSec)
 	drvEnc.Keys = keys
 	drvEnc.Tags = tags
 
+	// 设置每个driver的加密信息
 	c.drvRegistry.WalkDrivers(func(name string, driver driverapi.Driver, capability driverapi.Capability) bool {
 		err := driver.DiscoverNew(discoverapi.EncryptionKeysConfig, drvEnc)
 		if err != nil {

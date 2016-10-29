@@ -74,6 +74,7 @@ func probe() {
 	if out, err := exec.Command("modprobe", "-va", "nf_nat").CombinedOutput(); err != nil {
 		logrus.Warnf("Running modprobe nf_nat failed with message: `%s`, error: %v", strings.TrimSpace(string(out)), err)
 	}
+	// xt_conntrack 是一个内核中的netfilter模块，主要用于来匹配网络连接的追踪信息
 	if out, err := exec.Command("modprobe", "-va", "xt_conntrack").CombinedOutput(); err != nil {
 		logrus.Warnf("Running modprobe xt_conntrack failed with message: `%s`, error: %v", strings.TrimSpace(string(out)), err)
 	}
@@ -122,6 +123,8 @@ func NewChain(name string, table Table, hairpinMode bool) (*ChainInfo, error) {
 		Table:       table,
 		HairpinMode: hairpinMode,
 	}
+
+	// 如果不存在Chain的名称，那么默认为filter
 	if string(c.Table) == "" {
 		c.Table = Filter
 	}

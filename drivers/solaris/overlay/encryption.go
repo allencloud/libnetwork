@@ -263,7 +263,7 @@ func (n *network) maxMTU() int {
 	if n.mtu != 0 {
 		mtu = n.mtu
 	}
-	mtu -= vxlanEncap
+	mtu -= vxlanEncap // 使用MAC in UDP的方法进行封装，共50字节的封装报文头
 	if n.secure {
 		// In case of encryption account for the
 		// esp packet espansion and padding

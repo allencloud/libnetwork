@@ -96,20 +96,22 @@ type svcInfo struct {
 	svcMap     map[string][]net.IP
 	svcIPv6Map map[string][]net.IP
 	ipMap      map[string]*ipInfo
-	service    map[string][]servicePorts
+	service    map[string][]servicePorts // 一个service自然可以暴露多个端口，docker service create -p 400 -p 500
+
 }
 
 // backing container or host's info
+// serviceTarget 代表service中每个task对应的具体container的网络信息
 type serviceTarget struct {
-	name string
-	ip   net.IP
-	port uint16
+	name string // 应该是container的名字
+	ip   net.IP // container监听的IP
+	port uint16 // container监听的端口
 }
 
 type servicePorts struct {
-	portName string
-	proto    string
-	target   []serviceTarget
+	portName string          //
+	proto    string          // 端口的协议
+	target   []serviceTarget // service对应的后端多个container信息
 }
 
 type networkDBTable struct {
@@ -187,38 +189,40 @@ func (i *IpamInfo) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// 这个网络是high level的网络对象，用户创建的每一个network都有一个对象,
+// 这个对象会作为docker创建网络的返回对象，返回给docker daemon.
 type network struct {
-	ctrlr        *controller
-	name         string
-	networkType  string
-	id           string
-	created      time.Time
-	scope        string
-	labels       map[string]string
-	ipamType     string
-	ipamOptions  map[string]string
-	addrSpace    string
-	ipamV4Config []*IpamConf
-	ipamV6Config []*IpamConf
-	ipamV4Info   []*IpamInfo
-	ipamV6Info   []*IpamInfo
-	enableIPv6   bool
-	postIPv6     bool
-	epCnt        *endpointCnt
-	generic      options.Generic
-	dbIndex      uint64
-	dbExists     bool
-	persist      bool
-	stopWatchCh  chan struct{}
-	drvOnce      *sync.Once
-	resolverOnce sync.Once
-	resolver     []Resolver
-	internal     bool
-	attachable   bool
-	inDelete     bool
-	ingress      bool
-	driverTables []networkDBTable
-	dynamic      bool
+	ctrlr        *controller       // 此网络所属的控制器controller
+	name         string            // 此网络的名称
+	networkType  string            // 此网络的网络类型
+	id           string            // 此网络的ID
+	created      time.Time         // 此网络的创建时间
+	scope        strings           // 此网络的视角，local或者global
+	labels       map[string]string // 用户为该网络设置的标签
+	ipamType     string            // 该网络的网络地址管理器的类型，有default
+	ipamOptions  map[string]string // 网络地址管理器的选项
+	addrSpace    string            // 此网络的地址空间
+	ipamV4Config []*IpamConf       // 用户或者系统为此Network设定的ipv4网络地址配置
+	ipamV6Config []*IpamConf       // 用户或者系统为此Network设定的ipv6网络地址配置
+	ipamV4Info   []*IpamInfo       // 经过处理之后，netwok携带的关于ipam的具体配置信息，IpamConf是用户输入的配置，最终需要转化为实际的ipam配置信息
+	ipamV6Info   []*IpamInfo       //
+	enableIPv6   bool              // 此网络是否支持ipv6
+	postIPv6     bool              //
+	epCnt        *endpointCnt      // 指向一个endpointCnt对象，该对象包含，此网络包含的endpoint数量
+	generic      options.Generic   // 代表一个任意generic的选项设置
+	dbIndex      uint64            //
+	dbExists     bool              //
+	persist      bool              //
+	stopWatchCh  chan struct{}     //
+	drvOnce      *sync.Once        //
+	resolverOnce sync.Once         //
+	resolver     []Resolver        //
+	internal     bool              //
+	attachable   bool              // 代表是否允许worker上的容器通过用户手动添加到global视角的overlay网络中。
+	inDelete     bool              // 此 network 是否处于删除阶段
+	ingress      bool              // 此 network 是否是ingress网络
+	driverTables []networkDBTable  //
+	dynamic      bool              //
 	sync.Mutex
 }
 
@@ -721,22 +725,22 @@ func (n *network) processOptions(options ...NetworkOption) {
 	}
 }
 
-func (n *network) resolveDriver(name string, load bool) (driverapi.Driver, *driverapi.Capability, error) {
+func (n *network) resolveDriver(networkType string, load bool) (driverapi.Driver, *driverapi.Capability, error) {
 	c := n.getController()
 
 	// Check if a driver for the specified network type is available
-	d, cap := c.drvRegistry.Driver(name)
+	d, cap := c.drvRegistry.Driver(networkType)
 	if d == nil {
 		if load {
 			var err error
-			err = c.loadDriver(name)
+			err = c.loadDriver(networkType)
 			if err != nil {
 				return nil, nil, err
 			}
 
-			d, cap = c.drvRegistry.Driver(name)
+			d, cap = c.drvRegistry.Driver(networkType)
 			if d == nil {
-				return nil, nil, fmt.Errorf("could not resolve driver %s in registry", name)
+				return nil, nil, fmt.Errorf("could not resolve driver %s in registry", networkType)
 			}
 		} else {
 			// don't fail if driver loading is not required
@@ -1058,6 +1062,7 @@ func (n *network) updateSvcRecord(ep *endpoint, localEps []*endpoint, isAdd bool
 		}
 
 		if isAdd {
+			// 说明这个endpoint是新增进来的
 			// If anonymous endpoint has an alias use the first alias
 			// for ip->name mapping. Not having the reverse mapping
 			// breaks some apps
@@ -1072,6 +1077,8 @@ func (n *network) updateSvcRecord(ep *endpoint, localEps []*endpoint, isAdd bool
 				n.addSvcRecords(alias, iface.Address().IP, ipv6, false)
 			}
 		} else {
+			// 说明这个endpoint是已经删除掉的
+			// 需要将其删除掉
 			if ep.isAnonymous() {
 				if len(myAliases) > 0 {
 					n.deleteSvcRecords(myAliases[0], iface.Address().IP, ipv6, true)
@@ -1132,6 +1139,8 @@ func (n *network) addSvcRecords(name string, epIP net.IP, epIPv6 net.IP, ipMapUp
 	c := n.getController()
 	c.Lock()
 	defer c.Unlock()
+
+	// 查看controller的服务记录列表svcRecords中是否存在这个network
 	sr, ok := c.svcRecords[n.ID()]
 	if !ok {
 		sr = svcInfo{
@@ -1139,10 +1148,12 @@ func (n *network) addSvcRecords(name string, epIP net.IP, epIPv6 net.IP, ipMapUp
 			svcIPv6Map: make(map[string][]net.IP),
 			ipMap:      make(map[string]*ipInfo),
 		}
+		// 如果controller中不存在这个network，将sr加入，当前sr内部的内容还是空的
 		c.svcRecords[n.ID()] = sr
 	}
 
 	if ipMapUpdate {
+		// 为sr的ipMap添加内容
 		addIPToName(sr.ipMap, name, epIP)
 		if epIPv6 != nil {
 			addIPToName(sr.ipMap, name, epIPv6)
@@ -1231,6 +1242,7 @@ func (n *network) ipamAllocate() error {
 		return nil
 	}
 
+	// 获取对应的ipam allocator，用以分配网络地址给network
 	ipam, _, err := n.getController().getIPAMDriver(n.ipamType)
 	if err != nil {
 		return err
@@ -1306,6 +1318,7 @@ func (n *network) requestPoolHelper(ipam ipamapi.Ipam, addressSpace, preferredPo
 	}
 }
 
+// 这个函数很关键，ipam如何从pool中申请出相应的网络地址，分配给network
 func (n *network) ipamAllocateVersion(ipVer int, ipam ipamapi.Ipam) error {
 	var (
 		cfgList  *[]*IpamConf
@@ -1332,6 +1345,8 @@ func (n *network) ipamAllocateVersion(ipVer int, ipam ipamapi.Ipam) error {
 
 	logrus.Debugf("Allocating IPv%d pools for network %s (%s)", ipVer, n.Name(), n.ID())
 
+	// cfgList 是从network中的属性来获取的，比如 &n.ipamV4Config, &n.ipamV6Config
+	// 换言之，通过n.ipamV4Config来为network分配地址空间
 	for i, cfg := range *cfgList {
 		if err = cfg.Validate(); err != nil {
 			return err
@@ -1717,6 +1732,14 @@ func (n *network) ResolveIP(ip string) string {
 	return ipInfo.name + "." + nwName
 }
 
+// 在一个网络中，通过传入的service名，返回后端的所有DNS记录以及IP列表
+// An SRV represents a single DNS SRV record.
+// type SRV struct {
+//    Target   string
+//    Port     uint16
+//    Priority uint16
+//    Weight   uint16
+// }
 func (n *network) ResolveService(name string) ([]*net.SRV, []net.IP) {
 	c := n.getController()
 

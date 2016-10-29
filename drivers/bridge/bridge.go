@@ -601,6 +601,7 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 		return err
 	}
 
+	// 将ipV4Data，ipV6Data中的信息全部处理到config
 	err = config.processIPAM(id, ipV4Data, ipV6Data)
 	if err != nil {
 		return err
@@ -620,10 +621,13 @@ func (d *driver) createNetwork(config *networkConfiguration) error {
 
 	networkList := d.getNetworks()
 	for i, nw := range networkList {
+		// 遍历这个类型驱动下的所有网络
 		nw.Lock()
 		nwConfig := nw.config
 		nw.Unlock()
+		// 对比当前所需创建网络的config与，以及存在的网络的config，查看是否存在信息冲突
 		if err := nwConfig.Conflicts(config); err != nil {
+			// 若存在冲突
 			if config.DefaultBridge {
 				// We encountered and identified a stale default network
 				// We must delete it as libnetwork is the source of thruth
@@ -707,6 +711,7 @@ func (d *driver) createNetwork(config *networkConfiguration) error {
 	// by creating a new device and assigning it an IPv4 address.
 	bridgeAlreadyExists := bridgeIface.exists()
 	if !bridgeAlreadyExists {
+		// 这里是真正的创建网桥设备
 		bridgeSetup.queueStep(setupDevice)
 	}
 

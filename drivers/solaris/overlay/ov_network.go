@@ -31,12 +31,12 @@ type networkTable map[string]*network
 
 type subnet struct {
 	once      *sync.Once
-	vxlanName string
-	brName    string
-	vni       uint32
-	initErr   error
-	subnetIP  *net.IPNet
-	gwIP      *net.IPNet
+	vxlanName string     // vxlan 名称
+	brName    string     // 网桥名称
+	vni       uint32     // vxlan network id
+	initErr   error      // 子网初始化错误
+	subnetIP  *net.IPNet // 子网的IP网络地址，网络地址地址，包括，IP地址以及网络掩码
+	gwIP      *net.IPNet // 子网的网关IP地址
 }
 
 type subnetJSON struct {

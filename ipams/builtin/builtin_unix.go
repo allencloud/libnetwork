@@ -32,6 +32,7 @@ func Init(ic ipamapi.Callback, l, g interface{}) error {
 
 	ipamutils.InitNetworks()
 
+	// 新建一个网络地址分配器allocator，并通过初始化完成数据的更新与同步
 	a, err := ipam.NewAllocator(localDs, globalDs)
 	if err != nil {
 		return err
@@ -39,5 +40,6 @@ func Init(ic ipamapi.Callback, l, g interface{}) error {
 
 	cps := &ipamapi.Capability{RequiresRequestReplay: true}
 
+	// 将新建的allocator实例作为一个ipamdriver存储到drvRegistry中，并添加capability
 	return ic.RegisterIpamDriverWithCapabilities(ipamapi.DefaultIPAM, a, cps)
 }

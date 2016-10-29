@@ -67,15 +67,15 @@ type epHeap []*endpoint
 
 type sandbox struct {
 	id                 string
-	containerID        string
-	config             containerConfig
-	extDNS             []extDNSEntry
-	osSbox             osl.Sandbox
-	controller         *controller
-	resolver           Resolver
-	resolverOnce       sync.Once
-	refCnt             int
-	endpoints          epHeap
+	containerID        string          // 容器与Sandbox一一对应
+	config             containerConfig // 容器配置
+	extDNS             []extDNSEntry   // 用户为容器配置的外部DNS设置
+	osSbox             osl.Sandbox     // 指向一个Linux更底层的 networkNamespace 对象
+	controller         *controller     // 每个Sandbox中都有一个指向controller的指针
+	resolver           Resolver        // 每个Sandbox都有一个DNS解析器对象
+	resolverOnce       sync.Once       // resolverOnce只会执行一次Do
+	refCnt             int             // 这个Sandbox的引用计数
+	endpoints          epHeap          // 这个sandbox中拥有的endpoint列表
 	epPriority         map[string]int
 	populatedEndpoints map[string]struct{}
 	joinLeaveDone      chan struct{}
@@ -94,16 +94,22 @@ type hostsPathConfig struct {
 	domainName      string
 	hostsPath       string
 	originHostsPath string
-	extraHosts      []extraHost
-	parentUpdates   []parentUpdate
+	extraHosts      []extraHost    // hosts 文件中出了默认信息之外的，额外的hosts信息。也就是name:ip对
+	parentUpdates   []parentUpdate // 如下一个数据结构 parentUpdate 的说明
 }
 
+// parentUpdate 代表当容器间产生link操作的时候，产生的hosts文件变动
+// 举例说明：当已经有容器A，
+// 执行 docker run --name B -d --link A ubuntu:14.04 产生容器B时,
+// A 可以认为是 B 在link方面的parent container，Docker需要把 A 的信息写入到 B 的hosts文件中
 type parentUpdate struct {
 	cid  string
 	name string
 	ip   string
 }
 
+// 除了默认的hosts文件内容之外，
+// 还需要额外的hosts文件内容
 type extraHost struct {
 	name string
 	IP   string
@@ -119,14 +125,16 @@ type resolvConfPathConfig struct {
 	dnsOptionsList       []string
 }
 
+// libnetwork 眼中的容器配置，自然是包括所有与容器相关的网络配置
+// hosts 文件， resolv.conf等
 type containerConfig struct {
-	hostsPathConfig
-	resolvConfPathConfig
-	generic           map[string]interface{}
-	useDefaultSandBox bool
-	useExternalKey    bool
-	prio              int // higher the value, more the priority
-	exposedPorts      []types.TransportPort
+	hostsPathConfig                             //
+	resolvConfPathConfig                        //
+	generic              map[string]interface{} // 网络方面的标签信息
+	useDefaultSandBox    bool                   //
+	useExternalKey       bool                   //
+	prio                 int                    // higher the value, more the priority
+	exposedPorts         []types.TransportPort  //
 }
 
 const (
@@ -158,6 +166,7 @@ func (sb *sandbox) Labels() map[string]interface{} {
 	return opts
 }
 
+// 通过最底层的 osSbox 来获取网络命名空间的网络数据
 func (sb *sandbox) Statistics() (map[string]*types.InterfaceStatistics, error) {
 	m := make(map[string]*types.InterfaceStatistics)
 
@@ -170,6 +179,7 @@ func (sb *sandbox) Statistics() (map[string]*types.InterfaceStatistics, error) {
 
 	var err error
 	for _, i := range osb.Info().Interfaces() {
+		// i.Statistics() 返回具体那个interface的流量数据
 		if m[i.DstName()], err = i.Statistics(); err != nil {
 			return m, err
 		}
@@ -345,6 +355,7 @@ func (sb *sandbox) Endpoints() []Endpoint {
 	return endpoints
 }
 
+// 返回一个 sandbox 中所有的 endpoints
 func (sb *sandbox) getConnectedEndpoints() []*endpoint {
 	sb.Lock()
 	defer sb.Unlock()
@@ -411,6 +422,7 @@ func (sb *sandbox) updateGateway(ep *endpoint) error {
 	return nil
 }
 
+<<<<<<< HEAD
 func (sb *sandbox) HandleQueryResp(name string, ip net.IP) {
 	for _, ep := range sb.getConnectedEndpoints() {
 		n := ep.getNetwork()
@@ -418,12 +430,18 @@ func (sb *sandbox) HandleQueryResp(name string, ip net.IP) {
 	}
 }
 
+=======
+// 在一个sandbox中解析某一个IP
+>>>>>>> add Chinese comments
 func (sb *sandbox) ResolveIP(ip string) string {
 	var svc string
 	logrus.Debugf("IP To resolve %v", ip)
 
+	// 遍历sandbox中的每一个endpoint
 	for _, ep := range sb.getConnectedEndpoints() {
+		// 针对每一个endpoint获取其所属网络
 		n := ep.getNetwork()
+		// 通过该网络解析传入的参数ip
 		svc = n.ResolveIP(ip)
 		if len(svc) != 0 {
 			return svc
@@ -666,6 +684,8 @@ func (sb *sandbox) SetKey(basePath string) error {
 		}
 	}
 
+	// 针对这个sandbox中所有的endpoint
+	// 都让sandbox将该endpoint暴露对外
 	for _, ep := range sb.getConnectedEndpoints() {
 		if err = sb.populateNetworkResources(ep); err != nil {
 			return err
@@ -855,6 +875,7 @@ func (sb *sandbox) populateNetworkResources(ep *endpoint) error {
 
 	// Make sure to add the endpoint to the populated endpoint set
 	// before populating loadbalancers.
+	// Sandbox 与容器一一对应，一个Sandbox内可以有多个Endpoint，其中有可能有Endpoint需要对外暴露
 	sb.Lock()
 	sb.populatedEndpoints[ep.ID()] = struct{}{}
 	sb.Unlock()
